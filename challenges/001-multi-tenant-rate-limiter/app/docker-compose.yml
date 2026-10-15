@@ -1,0 +1,43 @@
+# Lokal çalıştırma: docker compose up --build
+# Gateway: http://localhost:8080  (payment-service dışarı açılmaz, sadece gateway üzerinden)
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: paylink
+      POSTGRES_USER: paylink
+      POSTGRES_PASSWORD: paylink
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paylink -d paylink"]
+      interval: 3s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-ttl"]
+    ports: ["6379:6379"]   # redis-cli ile kovaları izlemek için
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      retries: 20
+
+  payment-service:
+    build: ./payment-service
+    environment:
+      SIMULATED_DB_LATENCY: 20ms
+      BULKHEAD_MAX_CONCURRENT: 20
+
+  gateway:
+    build: ./gateway
+    ports: ["8080:8080"]
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/paylink
+      DB_USER: paylink
+      DB_PASSWORD: paylink
+      REDIS_HOST: redis
+      PAYMENT_SERVICE_URL: http://payment-service:8081
+      ADMIN_TOKEN: local-admin-token
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      payment-service: { condition: service_started }

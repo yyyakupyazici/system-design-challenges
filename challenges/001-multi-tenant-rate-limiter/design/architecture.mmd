@@ -1,0 +1,22 @@
+flowchart LR
+    T[Tenant backend<br/>X-API-Key] -->|HTTPS| LB[Ingress / LB<br/>Katman 0: IP limiti]
+    LB --> G1[gateway pod 1]
+    LB --> G2[gateway pod 2]
+    LB --> G3[gateway pod N]
+
+    subgraph GW[API Gateway - Spring Cloud Gateway]
+      G1
+      G2
+      G3
+    end
+
+    G1 & G2 & G3 -->|"1 Lua çağrısı / istek<br/>(tenant kovaları + kota)"| R[(Redis<br/>kovalar = ortak kara tahta)]
+    G1 & G2 & G3 -->|"global kova"| R
+    G1 & G2 & G3 -.->|"başlangıç + değişiklik<br/>(istek yolunda değil)"| PG[(PostgreSQL<br/>kurallar + audit + api_key)]
+    R -.->|"Pub/Sub: policy-changed"| G1 & G2 & G3
+
+    G1 & G2 & G3 -->|"X-Tenant-Id"| P[payment-service<br/>Bulkhead = son sigorta]
+    P --> DB[(Ödeme DB)]
+
+    A[Admin API] -->|"PUT /admin/policies"| PG
+    A -->|publish| R

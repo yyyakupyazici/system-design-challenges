@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant A as Admin
+    participant API as Admin API (herhangi bir pod)
+    participant PG as PostgreSQL
+    participant R as Redis Pub/Sub
+    participant P as Tüm gateway pod'ları
+
+    A->>API: PUT /admin/policies (tenant_42 burst 400 → 1000)
+    API->>PG: UPSERT + audit (version = nextval)
+    API->>R: PUBLISH ratelimit:policy-changed
+    R-->>P: mesaj
+    P->>PG: kuralları yeniden yükle → bellekteki snapshot'ı değiştir
+    Note over P: ~1-2 sn. Redis'teki kovalara dokunulmaz:<br/>yeni burst bir sonraki Lua çağrısına parametre olarak gider,<br/>min(burst, ...) kovayı kendiliğinden uydurur.
+    Note over P: Mesaj kaçarsa: her 60 sn max(version) kontrolü

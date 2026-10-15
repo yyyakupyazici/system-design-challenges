@@ -1,0 +1,60 @@
+# Sıfır güven: varsayılan olarak namespace'e giriş kapalı, sadece gereken yollar açık.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: paylink
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+# Ingress controller → gateway
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: gateway-from-ingress
+  namespace: paylink
+spec:
+  podSelector: { matchLabels: { app: gateway } }
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: ingress-nginx }
+      ports: [{ port: 8080 }]
+---
+# Sadece gateway → payment-service (X-Tenant-Id header'ına güvenebilmemizin sebebi bu)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payment-from-gateway
+  namespace: paylink
+spec:
+  podSelector: { matchLabels: { app: payment-service } }
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: gateway } }
+      ports: [{ port: 8081 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-from-gateway
+  namespace: paylink
+spec:
+  podSelector: { matchLabels: { app: redis } }
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: gateway } }
+      ports: [{ port: 6379 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: postgres-from-gateway
+  namespace: paylink
+spec:
+  podSelector: { matchLabels: { app: postgres } }
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: gateway } }
+      ports: [{ port: 5432 }]

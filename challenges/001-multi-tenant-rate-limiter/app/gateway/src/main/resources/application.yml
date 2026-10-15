@@ -1,0 +1,45 @@
+spring:
+  application:
+    name: paylink-gateway
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/paylink}
+    username: ${DB_USER:paylink}
+    password: ${DB_PASSWORD:paylink}
+    hikari:
+      maximum-pool-size: 4   # gateway DB'yi sadece kural yüklerken kullanır
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 200ms
+
+server:
+  port: 8080
+  shutdown: graceful
+
+paylink:
+  payment-service-url: ${PAYMENT_SERVICE_URL:http://localhost:8081}
+  admin-token: ${ADMIN_TOKEN:change-me-in-k8s-secret}
+
+ratelimit:
+  # Redis erişilemezse: true = isteği geçir (fail-open), false = 503 (fail-closed).
+  # Doğru davranışı Adım 5'te tartışacağız; şimdilik fail-open + metrik + alarm.
+  fail-open: ${RATELIMIT_FAIL_OPEN:true}
+  redis-timeout: ${RATELIMIT_REDIS_TIMEOUT:50ms}
+  quota-key-ttl: P2D
+  policy-refresh-interval: ${RATELIMIT_POLICY_REFRESH:PT60S}
+  global:
+    enabled: true
+    rate-per-sec: ${RATELIMIT_GLOBAL_RATE:25000}
+    burst: ${RATELIMIT_GLOBAL_BURST:25000}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+  endpoint:
+    health:
+      probes:
+        enabled: true

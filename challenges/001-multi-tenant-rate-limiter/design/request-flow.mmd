@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    participant C as Tenant
+    participant G as Gateway pod
+    participant M as Bellek (kurallar)
+    participant R as Redis
+    participant S as payment-service
+
+    C->>G: POST /payments (X-API-Key)
+    G->>M: sha256(key) → tenant_42, PRO
+    G->>M: kuralları çöz: genel(500/s, TENANT) + endpoint(50/s, PLAN) + kota
+    G->>R: EVALSHA token_bucket.lua (2 kova + kota, hepsi ya da hiçbiri)
+    alt kovalardan biri boş / kota dolu
+        R-->>G: allowed=0
+        G-->>C: 429 + Retry-After + X-RateLimit-*
+    else hepsinde jeton var
+        R-->>G: allowed=1, remaining
+        G->>R: global kova
+        alt global kapasite dolu
+            G->>R: kota iadesi (DECR)
+            G-->>C: 503 system_overloaded
+        else
+            G->>S: isteği ilet (X-API-Key silinir, X-Tenant-Id eklenir)
+            S-->>G: 201 / 5xx
+            opt 5xx
+                G->>R: kota iadesi (DECR)
+            end
+            G-->>C: cevap + X-RateLimit-* header'ları
+        end
+    end

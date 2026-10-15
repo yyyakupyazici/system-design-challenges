@@ -1,0 +1,38 @@
+# Demo: tek Redis. Kovalar kaybolsa sorun değil (yeniden dolar) → persistence kapalı.
+# Prod: Redis Cluster (3 master + replica) veya managed (ElastiCache / Memorystore).
+# Key'ler {tenant} hash tag'i taşıdığı için Cluster'a geçişte kod değişmez.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: paylink
+spec:
+  selector: { app: redis }
+  ports:
+    - port: 6379
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: paylink
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "volatile-ttl"]
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 200m, memory: 256Mi }
+            limits: { memory: 768Mi }

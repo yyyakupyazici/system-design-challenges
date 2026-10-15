@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: paylink
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/paylink
+  REDIS_HOST: redis
+  PAYMENT_SERVICE_URL: http://payment-service:8081
+  RATELIMIT_FAIL_OPEN: "true"
+  RATELIMIT_REDIS_TIMEOUT: 50ms
+  RATELIMIT_POLICY_REFRESH: PT60S
+  RATELIMIT_GLOBAL_RATE: "25000"
+  RATELIMIT_GLOBAL_BURST: "25000"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-config
+  namespace: paylink
+data:
+  SIMULATED_DB_LATENCY: 20ms
+  BULKHEAD_MAX_CONCURRENT: "20"
