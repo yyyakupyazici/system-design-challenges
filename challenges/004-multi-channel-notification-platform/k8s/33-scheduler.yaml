@@ -1,0 +1,67 @@
+# Scheduler: outbox → Kafka, sessiz saat / push→SMS yedeği zamanlayıcısı, takılan teslimat reaper'ı.
+# 2 replika: işler SKIP LOCKED / koşullu UPDATE ile paylaşıldığı için ikisi aynı anda güvenle çalışır.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-scheduler
+  namespace: notify
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: notify-scheduler }
+  template:
+    metadata:
+      labels: { app: notify-scheduler, part-of: notify }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      # Kafka consumer'ı kapatırken mevcut kaydı bitirsin, offset'i commit etsin
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: notify-scheduler } }
+      containers:
+        - name: notify
+          image: paramix/notification-platform:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: notify-config }
+          env:
+            - { name: ROLE_SCHEDULER, value: "true" }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notify-scheduler
+  namespace: notify
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notify-scheduler }
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

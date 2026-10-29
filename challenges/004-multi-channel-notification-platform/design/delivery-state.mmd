@@ -1,0 +1,24 @@
+stateDiagram-v2
+    [*] --> PENDING: router (hemen gönder)
+    [*] --> SCHEDULED: router (sessiz saat)
+    [*] --> FALLBACK_WAIT: router (push ack bekleniyor)
+    [*] --> SKIPPED: router (izin yok, kanal kapalı, iletişim yok)
+
+    SCHEDULED --> PENDING: not_before geldi
+    FALLBACK_WAIT --> PENDING: push ack gelmedi
+    FALLBACK_WAIT --> SKIPPED: push ack geldi
+
+    PENDING --> SENDING: worker sahiplendi (koşullu UPDATE)
+    SENDING --> PENDING: kota/sağlayıcı yok → RetryLater
+    SENDING --> SKIPPED: kampanya durdu / izin geri çekildi
+    SENDING --> SENT: sağlayıcı kabul etti
+    SENDING --> FAILED: kalıcı hata (geçersiz numara...)
+    SENDING --> UNKNOWN: timeout / pod öldü (kilit doldu)
+
+    UNKNOWN --> SENT: sağlayıcı "gönderdim" dedi
+    UNKNOWN --> PENDING: "gönderilmedi" ya da sorgulanamadı + critical/transactional
+    UNKNOWN --> FAILED: sorgulanamadı + marketing (bırak)
+
+    SENT --> DELIVERED: teslim raporu / uygulama ack'i
+    SENT --> FAILED: teslim edilemedi raporu
+    DELIVERED --> [*]

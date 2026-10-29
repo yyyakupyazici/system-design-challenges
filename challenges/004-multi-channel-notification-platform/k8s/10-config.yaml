@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: notify-config
+  namespace: notify
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/notify
+  REDIS_HOST: redis
+  KAFKA_BOOTSTRAP: kafka:9092
+  KAFKA_PARTITIONS: "12"
+  # Demo kümesinde tek broker var. Prod'da (Strimzi, 3 broker): "3" + min.insync.replicas=2.
+  KAFKA_REPLICAS: "1"
+  # Redis çökerse critical/transactional pod başına garanti / bu sayı kadar gönderir (yerel kova).
+  # Worker pod sayısına yakın tutulmalı (HPA min değeri).
+  QUOTA_FALLBACK_POD_COUNT: "6"
+  # Varsayılan olarak tüm roller kapalı; her Deployment kendi rolünü açar.
+  ROLE_API: "false"
+  ROLE_ROUTER: "false"
+  ROLE_WORKER: "false"
+  ROLE_SCHEDULER: "false"
+  # Şema migration'ını sadece api rolü çalıştırır (bkz. 30-api.yaml).
+  FLYWAY_ENABLED: "false"

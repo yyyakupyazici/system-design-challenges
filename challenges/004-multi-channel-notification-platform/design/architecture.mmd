@@ -1,0 +1,40 @@
+flowchart LR
+    T[40+ ekip<br/>servisleri] -->|POST /notifications<br/>idempotencyKey| API
+
+    subgraph NP[Bildirim Platformu]
+      API[notify-api] -->|aynı tx| PG[(PostgreSQL<br/>notification · outbox · delivery)]
+      SCH[notify-scheduler<br/>outbox relay · gecikmeli · reaper] -->|outbox satırları| K1
+      PG -.-> SCH
+
+      subgraph K1[Kafka: giriş topic'leri]
+        NC[notif.critical]
+        NT[notif.transactional]
+        NM[notif.marketing]
+      end
+
+      K1 --> R[notify-router<br/>tercih · izin · sessiz saat<br/>kanal seçimi · şablon]
+      R -->|cache-aside| RC[(Redis<br/>kullanıcı cache)]
+      R -->|delivery satırı PENDING| PG
+
+      subgraph K2[Kafka: teslimat topic'leri  kanal × öncelik]
+        SC[sms.critical / .transactional / .marketing]
+        EC[email.*]
+        PC[push.*]
+      end
+      R --> K2
+
+      SC --> WS[worker-sms]
+      EC --> WE[worker-email]
+      PC --> WP[worker-push]
+
+      WS & WE & WP -->|acquire| Q[(Redis<br/>öncelikli kota · Lua)]
+      WS & WE & WP -->|claim / SENT / UNKNOWN| PG
+    end
+
+    WS -->|client_ref| SA[SMS sağlayıcı A]
+    WS -.->|yedek| SB[SMS sağlayıcı B]
+    WE --> SES[E-posta]
+    WP --> FCM[FCM / APNs]
+
+    SA & SB -->|teslim raporu| API
+    APP[Mobil uygulama] -->|push ack| API

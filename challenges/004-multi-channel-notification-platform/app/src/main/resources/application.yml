@@ -1,0 +1,104 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: notification-platform
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/notify}
+    username: ${DB_USER:notify}
+    password: ${DB_PASSWORD:notify}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+  flyway:
+    enabled: ${FLYWAY_ENABLED:true}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 200ms          # kota yolu: Redis yavaşsa hızlıca yerel kovaya düş
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        linger.ms: 5
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      properties:
+        max.poll.records: 50
+    listener:
+      ack-mode: record        # her kayıt işlendikten sonra commit: çökme → en fazla 1 kayıt tekrar işlenir
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+notify:
+  # Kubernetes'te her Deployment sadece kendi rolünü açar (bkz. k8s/).
+  roles:
+    api: ${ROLE_API:true}
+    router: ${ROLE_ROUTER:true}
+    worker: ${ROLE_WORKER:true}
+    scheduler: ${ROLE_SCHEDULER:true}
+  kafka:
+    partitions: ${KAFKA_PARTITIONS:12}
+    replicas: ${KAFKA_REPLICAS:1}
+  worker:
+    channels: ${WORKER_CHANNELS:SMS,EMAIL,PUSH}
+  delivery:
+    lease: 60s
+    fallback-wait: 10s
+    max-attempts: 5
+    unknown-grace: 30s
+  quota:
+    fallback-pod-count: ${QUOTA_FALLBACK_POD_COUNT:10}
+
+  # Kapasite = her önceliğin garantisi + paylaşılan havuz (global − Σ garanti).
+  # Kural (başlangıçta doğrulanır): reserved ≤ ceiling ≤ reserved + paylaşılan havuz.
+  providers:
+    smsA:                       # birincil SMS sağlayıcısı, limit 2.000/sn → %5 pay
+      channel: SMS
+      order: 1
+      global-rate: 1900
+      priorities:               # Σ garanti 900 → paylaşılan havuz 1.000
+        CRITICAL:      { reserved: 400, ceiling: 1400 }
+        TRANSACTIONAL: { reserved: 500, ceiling: 1500 }
+        MARKETING:     { reserved: 0,   ceiling: 1000 }
+    smsB:                       # yedek SMS sağlayıcısı (pahalı; kampanyada kullanılmaz)
+      channel: SMS
+      order: 2
+      global-rate: 1000
+      priorities:               # Σ garanti 500 → paylaşılan 500
+        CRITICAL:      { reserved: 300, ceiling: 800 }
+        TRANSACTIONAL: { reserved: 200, ceiling: 700 }
+        MARKETING:     { reserved: 0,   ceiling: 500 }
+    ses:
+      channel: EMAIL
+      order: 1
+      global-rate: 500
+      priorities:               # Σ garanti 200 → paylaşılan 300
+        CRITICAL:      { reserved: 100, ceiling: 400 }
+        TRANSACTIONAL: { reserved: 100, ceiling: 400 }
+        MARKETING:     { reserved: 0,   ceiling: 300 }
+    fcm:
+      channel: PUSH
+      order: 1
+      global-rate: 10000
+      priorities:               # Σ garanti 5.000 → paylaşılan 5.000
+        CRITICAL:      { reserved: 2000, ceiling: 7000 }
+        TRANSACTIONAL: { reserved: 3000, ceiling: 8000 }
+        MARKETING:     { reserved: 0,    ceiling: 5000 }

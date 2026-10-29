@@ -1,0 +1,20 @@
+flowchart TD
+    A["acquire(smsA, CRITICAL)"] --> L{{"Redis Lua — tek komut, atomik<br/>(tüm key'ler q:{smsA}:… → aynı slot)"}}
+    L --> R0[Kovaları geçen süre kadar doldur<br/>saat = Redis TIME]
+    R0 --> R1{Kendi garantimde<br/>jeton var mı?}
+    R1 -->|evet| OK1[garantiden düş<br/>tavandan düş<br/>→ İZİN]
+    R1 -->|hayır| R2{Paylaşılan havuzda jeton var mı<br/>VE tavanı aşmıyor muyum?}
+    R2 -->|evet| OK2[havuzdan ödünç al<br/>tavandan düş<br/>→ İZİN]
+    R2 -->|hayır| NO[hiçbir şey düşme<br/>→ RED + bekleme_ms]
+
+    NO --> W{Öncelik?}
+    W -->|critical| W1[≤300 ms bekle,<br/>sonra yedek sağlayıcı]
+    W -->|marketing| W2[bekle = partition bekler<br/>backpressure, yedek yok]
+
+    subgraph Kapasite[smsA kapasitesi: 1.900/sn]
+      direction LR
+      G1[critical garanti 400]
+      G2[transactional garanti 500]
+      G3[marketing garanti 0]
+      SH[paylaşılan havuz 1.000]
+    end

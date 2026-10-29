@@ -1,0 +1,21 @@
+# Dışarıya SADECE sağlayıcı webhook'ları ve mobil uygulamanın ack ucu açılır.
+# POST /notifications iç servis: diğer ekipler küme içinden notify-api Service'ine gider (NetworkPolicy ile).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: notify-public
+  namespace: notify
+  annotations:
+    nginx.ingress.kubernetes.io/limit-rps: "200"      # webhook seli / kötüye kullanıma karşı kaba sınır
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: notify.paramix.example
+      http:
+        paths:
+          - path: /webhooks
+            pathType: Prefix
+            backend: { service: { name: notify-api, port: { number: 80 } } }
+          - path: /deliveries
+            pathType: Prefix
+            backend: { service: { name: notify-api, port: { number: 80 } } }

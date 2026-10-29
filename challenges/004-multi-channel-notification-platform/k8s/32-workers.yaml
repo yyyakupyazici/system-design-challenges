@@ -1,0 +1,202 @@
+# Worker'lar KANALA göre ayrı Deployment'lar: e-posta sağlayıcısı yavaşlarsa SMS pod'ları etkilenmez,
+# her kanal kendi yüküne göre ölçeklenir. Her pod içinde öncelik başına ayrı consumer grubu var.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-worker-sms
+  namespace: notify
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: notify-worker-sms }
+  template:
+    metadata:
+      labels: { app: notify-worker-sms, part-of: notify }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      # Kafka consumer'ı kapatırken mevcut kaydı bitirsin, offset'i commit etsin
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: notify-worker-sms } }
+      containers:
+        - name: notify
+          image: paramix/notification-platform:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: notify-config }
+          env:
+            - { name: ROLE_WORKER, value: "true" }
+            - { name: WORKER_CHANNELS, value: "SMS" }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notify-worker-sms
+  namespace: notify
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notify-worker-sms }
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-worker-email
+  namespace: notify
+spec:
+  replicas: 2
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: notify-worker-email }
+  template:
+    metadata:
+      labels: { app: notify-worker-email, part-of: notify }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      # Kafka consumer'ı kapatırken mevcut kaydı bitirsin, offset'i commit etsin
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: notify-worker-email } }
+      containers:
+        - name: notify
+          image: paramix/notification-platform:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: notify-config }
+          env:
+            - { name: ROLE_WORKER, value: "true" }
+            - { name: WORKER_CHANNELS, value: "EMAIL" }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notify-worker-email
+  namespace: notify
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notify-worker-email }
+  minReplicas: 2
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-worker-push
+  namespace: notify
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: notify-worker-push }
+  template:
+    metadata:
+      labels: { app: notify-worker-push, part-of: notify }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      # Kafka consumer'ı kapatırken mevcut kaydı bitirsin, offset'i commit etsin
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: notify-worker-push } }
+      containers:
+        - name: notify
+          image: paramix/notification-platform:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: notify-config }
+          env:
+            - { name: ROLE_WORKER, value: "true" }
+            - { name: WORKER_CHANNELS, value: "PUSH" }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notify-worker-push
+  namespace: notify
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notify-worker-push }
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

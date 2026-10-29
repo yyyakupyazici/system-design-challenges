@@ -1,0 +1,46 @@
+# Demo için tek pod. Prod: yönetilen PostgreSQL (RDS/Cloud SQL) veya CloudNativePG, okuma replikası ile.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: notify
+spec:
+  selector: { app: postgres }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: notify
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          ports: [{ containerPort: 5432 }]
+          env:
+            - { name: POSTGRES_DB, value: notify }
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "notify", "-d", "notify"] }
+            periodSeconds: 5
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/postgresql/data }
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 10Gi } }

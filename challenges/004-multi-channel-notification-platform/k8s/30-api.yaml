@@ -1,0 +1,87 @@
+# API: ekiplerin çağırdığı uç (POST /notifications), webhook'lar ve uygulama ack'leri.
+# Şema migration'ı (Flyway) sadece bu rol çalıştırır; diğer roller hazır şemayı kullanır.
+apiVersion: v1
+kind: Service
+metadata:
+  name: notify-api
+  namespace: notify
+spec:
+  selector: { app: notify-api }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notify-api
+  namespace: notify
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: notify-api }
+  template:
+    metadata:
+      labels: { app: notify-api, part-of: notify }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      # Kafka consumer'ı kapatırken mevcut kaydı bitirsin, offset'i commit etsin
+      terminationGracePeriodSeconds: 60
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: notify-api } }
+      containers:
+        - name: notify
+          image: paramix/notification-platform:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: notify-config }
+          env:
+            - { name: ROLE_API, value: "true" }
+            - { name: FLYWAY_ENABLED, value: "true" }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: notify-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notify-api
+  namespace: notify
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notify-api }
+  minReplicas: 3
+  maxReplicas: 12
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: notify-api
+  namespace: notify
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: notify-api }
