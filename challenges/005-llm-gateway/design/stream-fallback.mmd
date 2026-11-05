@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> Aday: plan = [birincil, yedekler...]
+    Aday --> Atla: circuit breaker açık / sağlayıcı kapasitesi dolu
+    Atla --> Aday: sıradaki aday
+    Aday --> İlkTokenBekle: stream başlat
+    İlkTokenBekle --> Yedek: hata ya da ilk token > firstTokenTimeout
+    Yedek --> Aday: kapasite iadesi, sıradaki aday
+    İlkTokenBekle --> Akıyor: ilk token geldi (kullanıcıya gitti)
+    Akıyor --> Bitti: tamamlandı → settle + cache + defter
+    Akıyor --> Koptu: hata (YEDEĞE GEÇİLMEZ)
+    Koptu --> [*]: üretilen kadar ödenir, error chunk + [DONE], cache'e yazılmaz
+    Bitti --> [*]
+    Aday --> Tükendi: aday kalmadı
+    Tükendi --> [*]: 503 all_providers_failed (rezervasyon tamamen iade)

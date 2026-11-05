@@ -1,0 +1,93 @@
+# Gateway: durumsuz; bütün durum Redis + PostgreSQL'de → yatay ölçeklenir.
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-gateway
+  namespace: llm-gateway
+spec:
+  selector: { app: llm-gateway }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-gateway
+  namespace: llm-gateway
+spec:
+  replicas: 3
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  selector:
+    matchLabels: { app: llm-gateway }
+  template:
+    metadata:
+      labels: { app: llm-gateway }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      # Açık stream'ler bitsin diye uzun süre: pod kapanırken yeni istek almaz, mevcut cevaplar tamamlanır.
+      # Yetişmeyen stream'lerin rezervasyonunu reaper kapatır.
+      terminationGracePeriodSeconds: 120
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: llm-gateway } }
+      containers:
+        - name: gateway
+          image: paramix/llm-gateway:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: llmgw-config }
+            - secretRef: { name: llmgw-secrets }
+          lifecycle:
+            preStop: { sleep: { seconds: 10 } }   # endpoint listesinden düşmeyi bekle
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 45
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { memory: 2Gi }
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+# İş çoğunlukla I/O bekleme (stream'ler), CPU düşük kalır → CPU'nun yanında eşzamanlı istek sayısına da bakılmalı
+# (Prometheus Adapter ile http_server_requests_active). Burada basit tutuldu.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: llm-gateway
+  namespace: llm-gateway
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: llm-gateway }
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 60 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600   # stream'leri sık sık kesmemek için yavaş küçül
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: llm-gateway
+  namespace: llm-gateway
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels: { app: llm-gateway }

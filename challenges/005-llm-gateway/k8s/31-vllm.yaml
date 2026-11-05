@@ -1,0 +1,46 @@
+# Kendi GPU kümemiz (zorluk #5): açık kaynak model vLLM ile, OpenAI-uyumlu API. "Gizli" veri sadece buraya gider.
+# Örnek: 8 GPU'yu 4 replikaya (her biri 2 GPU, tensor-parallel) böler. Model ve imaj sürümü ortama göre seçilir.
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm
+  namespace: llm-gateway
+spec:
+  selector: { app: vllm }
+  ports: [{ port: 8000 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vllm
+  namespace: llm-gateway
+spec:
+  replicas: 4
+  selector:
+    matchLabels: { app: vllm }
+  template:
+    metadata:
+      labels: { app: vllm }
+    spec:
+      nodeSelector: { node.kubernetes.io/gpu: "true" }
+      tolerations:
+        - { key: nvidia.com/gpu, operator: Exists, effect: NoSchedule }
+      containers:
+        - name: vllm
+          image: vllm/vllm-openai:v0.6.6
+          args:
+            - --model=/models/internal-model      # model ağırlıkları önceden PVC'ye indirilir (internetten çekilmez)
+            - --served-model-name=internal-model
+            - --tensor-parallel-size=2
+            - --max-num-seqs=64
+            - --enable-prefix-caching             # sistem prompt'ları GPU'da da önbelleklenir
+          ports: [{ containerPort: 8000 }]
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+          resources:
+            limits: { nvidia.com/gpu: 2 }
+          volumeMounts: [{ name: models, mountPath: /models, readOnly: true }]
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: llm-models }

@@ -1,0 +1,11 @@
+gateway:
+  clients:
+    tiny:          { key-sha256: 15eeb0e5f53c219d9fb88fa052bcdb915d65a81995b9d4b1bb027c8b7f3d9d60, team: tiny, app: tiny-app }
+    tinydown:      { key-sha256: 2b231c98cabe8dc6b3fef6c2c7d05ee72445b70efb52874da4bc4570ae8b12d7, team: tinydown, app: tinydown-app }
+    slow:          { key-sha256: 3c4f8a917a882ae8e6010553cced4924424f68133ab248a555c9482e13749046, team: slow, app: slow-app }
+  teams:
+    tiny:          { daily-credits: 1, over-budget: REJECT }
+    tinydown:      { daily-credits: 1, over-budget: DOWNGRADE }
+    slow:          { daily-credits: 100, tokens-per-minute: 1500 }
+  routing:
+    first-token-timeout: 1s

@@ -1,0 +1,25 @@
+# Gizli olmayan ayarlar. Model kimlikleri sağlayıcıya göre değişir; burada örnek değerler var.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llmgw-config
+  namespace: llm-gateway
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/llmgw
+  REDIS_HOST: redis
+  SEMANTIC_STORE: pgvector
+  PRIMARY_PROVIDER_TYPE: ANTHROPIC
+  BACKUP_PROVIDER_TYPE: OPENAI
+  GPU_PROVIDER_TYPE: OPENAI            # vLLM OpenAI-uyumlu API sunar
+  GPU_BASE_URL: http://vllm:8000
+  SMALL_MODEL_ID: "<küçük-model-id>"
+  LARGE_MODEL_ID: "<büyük-model-id>"
+  SMALL_BACKUP_MODEL_ID: "<yedek-küçük-model-id>"
+  LARGE_BACKUP_MODEL_ID: "<yedek-büyük-model-id>"
+  INTERNAL_MODEL_ID: "<vllm-model-adı>"
+  PRIMARY_TPM: "2000000"
+  BACKUP_TPM: "500000"                 # yedeğin kapasitesi birincilin dörtte biri (zorluk #2)
+  GPU_TPM: "360000"                    # ~6.000 token/sn
+  EMBEDDING_TYPE: OPENAI
+  EMBEDDING_MODEL: text-embedding-3-small
+  EMBEDDING_DIMENSIONS: "256"

@@ -1,0 +1,32 @@
+flowchart LR
+    subgraph Teams["Ekipler (OpenAI SDK, base_url = gateway)"]
+        S[Müşteri destek]:::t
+        B[Toplu özetleme]:::t
+        R[Risk asistanı]:::t
+    end
+
+    subgraph GW["LLM Gateway (durumsuz, N pod)"]
+        direction TB
+        A[① Auth + veri sınıfı] --> P[② PII maskele]
+        P --> RT[③ Yönlendir<br/>auto / gizli → internal]
+        RT --> C{④ Cache<br/>exact → semantic}
+        C -- isabet --> OUT
+        C -- ıska --> L[⑤ Ekip token/dk]
+        L --> BU[⑥ Bütçe rezervasyonu<br/>en fazla tutar]
+        BU --> PR[⑦ Sağlayıcı<br/>circuit breaker + kapasite + fallback]
+        PR --> U[⑧ PII geri aç<br/>stream'de parça parça]
+        U --> OUT[Cevap / SSE]
+        PR -. bitince .-> ST[⑨ Mutabakat + cache yaz + defter]
+    end
+
+    Teams --> A
+    L & BU & C <--> RD[(Redis<br/>bütçe, kovalar, exact cache)]
+    C <--> PG[(PostgreSQL + pgvector<br/>semantic cache, kullanım defteri)]
+    ST --> PG
+    ST --> RD
+
+    PR --> EXT1[Birincil sağlayıcı]
+    PR --> EXT2[Yedek sağlayıcı<br/>kapasite ¼]
+    PR --> GPU[Kendi GPU kümemiz<br/>vLLM, gizli veri]
+
+    classDef t fill:#eef,stroke:#88a

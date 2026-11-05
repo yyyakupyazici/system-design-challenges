@@ -1,0 +1,157 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: llm-gateway
+  threads:
+    virtual:
+      enabled: true           # sağlayıcı çağrıları saniyelerce sürer; her istek bir platform thread'i tutmasın
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/llmgw}
+    username: ${DB_USER:llmgw}
+    password: ${DB_PASSWORD:llmgw}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:10}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 200ms
+  mvc:
+    async:
+      request-timeout: 5m     # uzun stream'ler
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+gateway:
+  # Ekipler gateway anahtarı alır; sağlayıcı anahtarlarını hiç görmez. Burada anahtarın SHA-256 özeti durur.
+  # Demo anahtarlar: sk-support-demo, sk-batch-demo, sk-risk-demo (prod'da Secret'tan gelir).
+  clients:
+    support-bot:
+      key-sha256: ${SUPPORT_KEY_SHA256:630ae94336da6b766146605f825d1b954a1472e5f9988222a811928cbf373a3f}
+      team: support
+      app: support-bot
+      app-type: CHAT
+    doc-summarizer:
+      key-sha256: ${BATCH_KEY_SHA256:ce6322ef624dfba5800411ad10a68da64b20dc38cc71d91fedf66dd81fc6ea45}
+      team: analytics
+      app: doc-summarizer
+      app-type: BATCH
+    risk-assistant:
+      key-sha256: ${RISK_KEY_SHA256:87623ee903c84a105173c1cb16ed8389d8091c4bb94575a1cc0ef15f5b773a4b}
+      team: risk
+      app: risk-assistant
+      app-type: CHAT
+      cacheable: false        # kişiye özel analiz üretiyor: yanıt cache'i kapalı
+
+  # Kredi = IDE'deki fiyat listesiyle aynı birim. Kural: tavan ≤ garanti + paylaşılan havuz (başlangıçta doğrulanır).
+  teams:
+    support:                  # 10 kişi, günlük 1.200 kredi → 10×60 garanti + 600 paylaşılan havuz
+      daily-credits: 1200
+      members: [u1, u2, u3, u4, u5, u6, u7, u8, u9, u10]
+      guarantee-per-member-credits: 60
+      user-ceiling-credits: 300
+      over-budget: DOWNGRADE  # bütçe biterken büyük model yerine küçük modele düş
+      tokens-per-minute: 400000
+    analytics:
+      daily-credits: 2000
+      over-budget: REJECT
+      tokens-per-minute: 600000
+    risk:
+      daily-credits: 500
+      over-budget: REJECT
+
+  # Fiyatlar 1M token başına kredi: input / output / cache read / cache write.
+  models:
+    small:
+      provider: primary
+      provider-model: ${SMALL_MODEL_ID:small-model}
+      tier: SMALL
+      input-price: 20
+      output-price: 100
+      cache-read-price: 2
+      cache-write-price: 25
+      fallbacks: [small-backup]
+    small-backup:
+      provider: backup
+      provider-model: ${SMALL_BACKUP_MODEL_ID:small-backup-model}
+      tier: SMALL
+      input-price: 30
+      output-price: 120
+    large:
+      provider: primary
+      provider-model: ${LARGE_MODEL_ID:large-model}
+      tier: LARGE
+      input-price: 200
+      output-price: 1000
+      cache-read-price: 10
+      cache-write-price: 250
+      max-output-tokens: 8192
+      fallbacks: [large-backup]
+    large-backup:
+      provider: backup
+      provider-model: ${LARGE_BACKUP_MODEL_ID:large-backup-model}
+      tier: LARGE
+      input-price: 250
+      output-price: 1000
+    internal:                 # kendi GPU kümemiz (vLLM, OpenAI uyumlu); gizli veri sadece buraya
+      provider: gpu
+      provider-model: ${INTERNAL_MODEL_ID:internal-model}
+      tier: INTERNAL
+      input-price: 8
+      output-price: 24
+
+  # Sağlayıcı tipi env ile değişir: FAKE (lokal/test) | ANTHROPIC | OPENAI | OLLAMA. Anahtarlar Secret'tan.
+  providers:
+    primary:
+      type: ${PRIMARY_PROVIDER_TYPE:FAKE}
+      api-key: ${PRIMARY_API_KEY:}
+      base-url: ${PRIMARY_BASE_URL:}
+      tokens-per-minute: ${PRIMARY_TPM:2000000}
+    backup:
+      type: ${BACKUP_PROVIDER_TYPE:FAKE}
+      api-key: ${BACKUP_API_KEY:}
+      base-url: ${BACKUP_BASE_URL:}
+      tokens-per-minute: ${BACKUP_TPM:500000}
+    gpu:
+      type: ${GPU_PROVIDER_TYPE:FAKE}
+      base-url: ${GPU_BASE_URL:http://vllm.llm-gateway.svc:8000}
+      api-key: ${GPU_API_KEY:internal}
+      internal: true
+      tokens-per-minute: ${GPU_TPM:300000}
+
+  routing:
+    small-model: small
+    large-model: large
+    confidential-model: internal
+    large-input-tokens: 3000
+    first-token-timeout: 10s
+
+  cache:
+    exact-ttl: 24h
+    semantic-enabled: true
+    semantic-threshold: 0.92
+    semantic-store: ${SEMANTIC_STORE:memory}     # prod: pgvector
+    prompt-cache-min-prefix-tokens: 1024
+
+  limits:
+    max-input-tokens: 32000
+    reservation-ttl: 10m
+    budget-time-zone: Europe/Istanbul
+
+  embedding:
+    type: ${EMBEDDING_TYPE:FAKE}
+    base-url: ${EMBEDDING_BASE_URL:}
+    api-key: ${EMBEDDING_API_KEY:}
+    model: ${EMBEDDING_MODEL:text-embedding-3-small}
+    dimensions: ${EMBEDDING_DIMENSIONS:256}

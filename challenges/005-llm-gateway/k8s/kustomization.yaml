@@ -1,0 +1,12 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - 00-namespace.yaml
+  - 10-config.yaml
+  - 11-secret.example.yaml   # sadece lokal/kind için; prod'da çıkar
+  - 20-postgres.yaml
+  - 21-redis.yaml
+  - 30-gateway.yaml
+  - 31-vllm.yaml             # GPU node'u yoksa çıkarın (GPU_PROVIDER_TYPE=FAKE)
+  - 40-ingress.yaml
+  - 50-networkpolicy.yaml

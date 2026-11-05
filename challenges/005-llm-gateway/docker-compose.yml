@@ -1,0 +1,30 @@
+# Lokal demo: sağlayıcılar FAKE (API anahtarı gerekmez). Gerçek sağlayıcı için .env'de
+# PRIMARY_PROVIDER_TYPE=ANTHROPIC, PRIMARY_API_KEY=..., LARGE_MODEL_ID=... gibi değerleri verin.
+#   docker compose up --build
+#   curl -s localhost:8080/v1/chat/completions -H 'Authorization: Bearer sk-support-demo' \
+#     -H 'Content-Type: application/json' -d '{"model":"auto","messages":[{"role":"user","content":"EFT nedir?"}]}'
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment: { POSTGRES_DB: llmgw, POSTGRES_USER: llmgw, POSTGRES_PASSWORD: llmgw }
+    ports: ["5432:5432"]
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U llmgw"], interval: 3s, retries: 20 }
+  redis:
+    image: redis:7.4-alpine
+    command: ["--appendonly", "yes", "--appendfsync", "everysec"]   # bütçe = para: kalıcı
+    ports: ["6379:6379"]
+  gateway:
+    build: ./app
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_started }
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/llmgw
+      REDIS_HOST: redis
+      SEMANTIC_STORE: pgvector
+      PRIMARY_PROVIDER_TYPE: ${PRIMARY_PROVIDER_TYPE:-FAKE}
+      PRIMARY_API_KEY: ${PRIMARY_API_KEY:-}
+      BACKUP_PROVIDER_TYPE: ${BACKUP_PROVIDER_TYPE:-FAKE}
+      BACKUP_API_KEY: ${BACKUP_API_KEY:-}
+      GPU_PROVIDER_TYPE: ${GPU_PROVIDER_TYPE:-FAKE}
+    ports: ["8080:8080"]

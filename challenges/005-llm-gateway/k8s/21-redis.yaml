@@ -1,0 +1,45 @@
+# Bütçe rezervasyonları, token/dk kovaları, exact cache.
+# 004'ten farkı: burada bütçe = PARA. Kaybolursa ekipler günün bütçesini sıfırdan harcar → AOF açık.
+# Prod: Redis Cluster; bütçe key'leri hash tag'li (b:{ekip:gün}...) → bir ekibin bütün key'leri aynı slotta.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: llm-gateway
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis
+  namespace: llm-gateway
+spec:
+  serviceName: redis
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      securityContext: { runAsNonRoot: true, runAsUser: 999, fsGroup: 999, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          # volatile-lru: sadece TTL'li key'ler (cache) atılır; bütçe key'leri de TTL'li ama 3 gün → cache önce gider
+          args: ["--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "1gb", "--maxmemory-policy", "volatile-lru"]
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: data, mountPath: /data }]
+          resources:
+            requests: { cpu: 500m, memory: 1200Mi }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 5Gi } }

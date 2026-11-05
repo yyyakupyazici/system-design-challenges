@@ -1,0 +1,26 @@
+sequenceDiagram
+    autonumber
+    participant C as İstemci (u1)
+    participant G as Gateway
+    participant R as Redis (b:{support:gün})
+    participant P as Sağlayıcı
+
+    C->>G: POST /v1/chat/completions (max_tokens 1024)
+    G->>G: en fazla tutar = girdi × max(input, cacheWrite) + max_tokens × output
+    G->>R: EVAL budget_reserve.lua (tutar, garanti, havuz, tavan)
+    alt garanti + havuz yetiyor ve kişi tavanı aşılmıyor
+        R-->>G: {1, garantiden, havuzdan}
+        G->>P: stream
+        P-->>G: token ... token, usage (girdi, cache okuma/yazma, çıktı)
+        G-->>C: SSE parçaları (PII geri açılmış)
+        G->>R: EVAL budget_settle.lua (gerçek tutar)
+        Note over R: fark iade: önce havuza, sonra kişinin garantisine.<br/>Idempotent: ikinci settle etkisiz.
+    else yetmiyor
+        R-->>G: {0, sebep}
+        alt ekip DOWNGRADE seçtiyse
+            G->>R: en ucuz model için tekrar rezervasyon
+        else REJECT
+            G-->>C: 402 budget_exceeded
+        end
+    end
+    Note over G,R: Pod stream ortasında ölürse settle gelmez →<br/>reaper süresi geçen rezervasyonu tam tutarla kapatır.
