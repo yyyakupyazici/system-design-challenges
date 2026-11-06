@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cluster-config
+  namespace: redis-lab
+data:
+  redis.conf: |
+    port 6379
+    # --- cluster ---
+    cluster-enabled yes
+    cluster-config-file /data/nodes.conf      # düğüm kimliği + bildiği topoloji; PVC'de durur, pod yeniden doğunca kimliğini korur
+    cluster-node-timeout 5000                 # bir düğüm bu kadar ms cevap vermezse şüpheli; çoğunluk onaylayınca FAIL → failover
+    cluster-preferred-endpoint-type hostname  # istemciye IP yerine pod DNS adı ver (pod IP'leri değişir, adlar değişmez)
+    cluster-require-full-coverage no          # bir slot aralığı tamamen düşse bile diğer slotlar hizmet vermeye devam etsin
+    cluster-allow-reads-when-down no
+    # --- kalıcılık ---
+    appendonly yes                            # her yazma AOF'a; kilit/stok/sayaç kaybolmasın
+    appendfsync everysec                      # saniyede bir fsync: en fazla ~1 sn veri kaybı, iyi performans
+    save 3600 1                               # saatlik RDB snapshot: yedek almak ve hızlı açılış için
+    # --- bellek ---
+    maxmemory 400mb
+    maxmemory-policy noeviction               # bu cluster DURUM tutuyor (kilit, stok, kuyruk): asla sessizce silme, yazmayı reddet.
+                                              # Sadece cache tutan ayrı bir cluster'da allkeys-lru olurdu (docs/03).
+    # --- güvenlik ---
+    protected-mode no                         # parola + NetworkPolicy ile korunuyor
+    rename-command FLUSHALL ""                # yanlışlıkla bütün veriyi silmeyi imkânsız kıl
+    rename-command KEYS ""                    # KEYS * üretimde Redis'i saniyelerce kilitler; SCAN kullanılır
+    # --- gözlem ---
+    slowlog-log-slower-than 10000             # 10 ms'den yavaş komutları kaydet (SLOWLOG GET)
+    latency-monitor-threshold 50

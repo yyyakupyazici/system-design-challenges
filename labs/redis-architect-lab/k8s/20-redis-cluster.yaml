@@ -1,0 +1,101 @@
+# 6 düğümlü Redis Cluster: 3 master + 3 replika (her master'ın bir yedeği).
+# StatefulSet: her pod'un sabit adı (redis-cluster-0..5), sabit DNS kaydı ve kendi diski (PVC) var.
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cluster-headless           # pod başına DNS: redis-cluster-N.redis-cluster-headless.redis-lab.svc
+  namespace: redis-lab
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true         # cluster kurulurken düğümler hazır olmadan birbirini bulabilsin
+  selector: { app: redis-cluster }
+  ports:
+    - { name: client, port: 6379 }
+    - { name: gossip, port: 16379 }      # cluster bus: düğümler arası sağlık ve topoloji (port + 10000)
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: redis-cluster
+  namespace: redis-lab
+spec:
+  serviceName: redis-cluster-headless
+  replicas: 6
+  podManagementPolicy: Parallel          # 6 pod aynı anda başlasın (sıralı başlatmaya gerek yok)
+  selector:
+    matchLabels: { app: redis-cluster }
+  template:
+    metadata:
+      labels: { app: redis-cluster }
+    spec:
+      # Bir master ile kendi replikası aynı node'da olursa o node gidince ikisi birden gider → veri kaybı.
+      # Pod'ları farklı node'lara dağıt (prod'da required; kind'da tek node olabileceği için preferred).
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector: { matchLabels: { app: redis-cluster } }
+      terminationGracePeriodSeconds: 30
+      securityContext: { runAsUser: 999, runAsGroup: 999, fsGroup: 999, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          ports:
+            - { name: client, containerPort: 6379 }
+            - { name: gossip, containerPort: 16379 }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_IP
+              valueFrom: { fieldRef: { fieldPath: status.podIP } }
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: redis-auth, key: REDIS_PASSWORD } }
+          command: ["sh", "-c"]
+          args:
+            - |
+              # Pod yeniden doğunca IP'si değişir ama nodes.conf eski IP'yi tutar. Kendi satırımızı yeni IP ile
+              # güncelliyoruz; diğer düğümler bizi gossip ile yeni IP'den tanır. (Yaygın Helm chart'larının yöntemi.)
+              if [ -f /data/nodes.conf ]; then
+                sed -i -e "/myself/ s/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/${POD_IP}/" /data/nodes.conf
+              fi
+              exec redis-server /conf/redis.conf \
+                --requirepass "${REDIS_PASSWORD}" --masterauth "${REDIS_PASSWORD}" \
+                --cluster-announce-ip "${POD_IP}" \
+                --cluster-announce-hostname "${POD_NAME}.redis-cluster-headless.redis-lab.svc.cluster.local"
+          readinessProbe:
+            exec: { command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"] }
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 6           # liveness, failover'dan (5 sn) daha sabırlı olmalı: Redis'i gereksiz yere öldürme
+          resources:
+            requests: { cpu: 250m, memory: 512Mi }
+            limits: { memory: 512Mi }    # maxmemory 400mb + AOF rewrite/fork payı. Limit aşılırsa OOMKill = failover
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+            - { name: conf, mountPath: /conf }
+      volumes:
+        - name: conf
+          configMap: { name: redis-cluster-config }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 2Gi } }
+---
+# Bakım sırasında (node drain) aynı anda en fazla 1 Redis pod'u gitsin: 2 pod giderse bir master + replikası
+# birlikte gidebilir ve o slot aralığı erişilemez olur.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-cluster
+  namespace: redis-lab
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: redis-cluster }

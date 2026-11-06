@@ -1,0 +1,9 @@
+# kind create cluster --name redis-lab --config k8s/kind-config.yaml
+# 3 worker: Redis pod'ları farklı node'lara dağılabilsin (anti-affinity'yi görmek için)
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker

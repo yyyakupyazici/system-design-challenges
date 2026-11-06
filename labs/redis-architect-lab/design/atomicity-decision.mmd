@@ -1,0 +1,12 @@
+flowchart TD
+    Q["Oku → karar ver → yaz<br/>işini atomik yapmam gerekiyor"] --> A{"Tek bir Redis komutu<br/>bunu yapıyor mu?<br/>(INCR, SET NX PX, ZINCRBY, LMOVE...)"}
+    A -- evet --> CMD["Tek komut kullan"]
+    A -- hayır --> B{"Koşul, hesaplama ya da<br/>birden çok key var mı?"}
+    B -- evet --> C{"Key'ler aynı slotta mı?<br/>(cluster)"}
+    C -- evet --> LUA["Lua script'i (EVALSHA)<br/>önce kontrol, sonra yaz"]
+    C -- hayır --> TAG["Hash tag ile aynı slota al<br/>{atomik birim}"] --> LUA
+    B -- hayır --> PIPE["Sadece hız mı istiyorsun?<br/>Pipeline (atomik DEĞİL)"]
+    LUA --> D{"Veri kaybı ya da<br/>failover kabul edilebilir mi?"}
+    CMD --> D
+    D -- evet --> OK["Redis yeterli"]
+    D -- hayır --> DB["Gerçeğin kaynağı veritabanı<br/>Redis önünde hızlı kapı + mutabakat"]

@@ -1,0 +1,22 @@
+flowchart TB
+    subgraph NS["namespace: redis-lab"]
+        direction TB
+        APP["redis-lab-app<br/>Deployment ×2 (HPA 2–6)<br/>Lettuce: cluster-aware istemci"]
+        JOB["redis-cluster-init<br/>Job (bir kez, idempotent)"]
+        subgraph STS["StatefulSet redis-cluster ×6 · headless Service · PDB maxUnavailable 1"]
+            direction LR
+            M0["redis-cluster-0<br/>master · slot 0–5460"]
+            M1["redis-cluster-1<br/>master · slot 5461–10922"]
+            M2["redis-cluster-2<br/>master · slot 10923–16383"]
+            R0["replika ← M0"]
+            R1["replika ← M1"]
+            R2["replika ← M2"]
+        end
+    end
+    APP -- "6379: komutlar<br/>MOVED/ASK ile doğru düğüme" --> STS
+    JOB -- "redis-cli --cluster create" --> STS
+    M0 -. "16379 cluster bus<br/>gossip, failover" .- M1
+    M1 -. .- M2
+    M0 -- "asenkron replikasyon" --> R0
+    M1 --> R1
+    M2 --> R2

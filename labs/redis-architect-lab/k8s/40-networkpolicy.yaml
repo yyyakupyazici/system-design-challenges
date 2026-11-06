@@ -1,0 +1,17 @@
+# Redis'e sadece uygulama ve init Job erişir; düğümler birbirleriyle 6379 ve 16379 (cluster bus) üzerinden konuşur.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: redis-cluster
+  namespace: redis-lab
+spec:
+  podSelector: { matchLabels: { app: redis-cluster } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: redis-lab-app } }
+        - podSelector: { matchLabels: { app: redis-cluster-init } }
+      ports: [{ port: 6379 }]
+    - from:
+        - podSelector: { matchLabels: { app: redis-cluster } }
+      ports: [{ port: 6379 }, { port: 16379 }]

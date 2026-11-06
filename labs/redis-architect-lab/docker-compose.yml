@@ -1,0 +1,44 @@
+# Lokal: 6 düğümlü Redis Cluster (3 master + 3 replika) + uygulama, tek komutla.
+#   docker compose up --build
+#   curl -s localhost:8080/lab/cluster | jq
+#
+# Düğümler kendilerini konteyner adıyla duyurur (cluster-announce-hostname), istemciler de MOVED
+# yönlendirmesinde IP yerine bu adı alır (cluster-preferred-endpoint-type hostname). Bu yüzden uygulama
+# compose ağının İÇİNDE çalışmalı; host makineden cluster'a bağlanmak için scripts/local-cluster.sh kullanın.
+x-redis: &redis
+  image: redis:7.4-alpine
+  healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 30 }
+
+services:
+  redis-0: { <<: *redis, command: ["redis-server", "--cluster-enabled", "yes", "--cluster-announce-hostname", "redis-0", "--cluster-preferred-endpoint-type", "hostname", "--cluster-node-timeout", "5000", "--appendonly", "yes"] }
+  redis-1: { <<: *redis, command: ["redis-server", "--cluster-enabled", "yes", "--cluster-announce-hostname", "redis-1", "--cluster-preferred-endpoint-type", "hostname", "--cluster-node-timeout", "5000", "--appendonly", "yes"] }
+  redis-2: { <<: *redis, command: ["redis-server", "--cluster-enabled", "yes", "--cluster-announce-hostname", "redis-2", "--cluster-preferred-endpoint-type", "hostname", "--cluster-node-timeout", "5000", "--appendonly", "yes"] }
+  redis-3: { <<: *redis, command: ["redis-server", "--cluster-enabled", "yes", "--cluster-announce-hostname", "redis-3", "--cluster-preferred-endpoint-type", "hostname", "--cluster-node-timeout", "5000", "--appendonly", "yes"] }
+  redis-4: { <<: *redis, command: ["redis-server", "--cluster-enabled", "yes", "--cluster-announce-hostname", "redis-4", "--cluster-preferred-endpoint-type", "hostname", "--cluster-node-timeout", "5000", "--appendonly", "yes"] }
+  redis-5: { <<: *redis, command: ["redis-server", "--cluster-enabled", "yes", "--cluster-announce-hostname", "redis-5", "--cluster-preferred-endpoint-type", "hostname", "--cluster-node-timeout", "5000", "--appendonly", "yes"] }
+
+  cluster-init:
+    image: redis:7.4-alpine
+    depends_on:
+      redis-0: { condition: service_healthy }
+      redis-1: { condition: service_healthy }
+      redis-2: { condition: service_healthy }
+      redis-3: { condition: service_healthy }
+      redis-4: { condition: service_healthy }
+      redis-5: { condition: service_healthy }
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        if redis-cli -h redis-0 cluster info | grep -q cluster_state:ok; then echo "cluster zaten kurulu"; exit 0; fi
+        NODES=""
+        for i in 0 1 2 3 4 5; do NODES="$$NODES $$(getent hosts redis-$$i | awk '{print $$1}'):6379"; done
+        redis-cli --cluster create $$NODES --cluster-replicas 1 --cluster-yes
+
+  app:
+    build: ./app
+    depends_on:
+      cluster-init: { condition: service_completed_successfully }
+    environment:
+      SPRING_PROFILES_ACTIVE: cluster
+      REDIS_CLUSTER_NODES: redis-0:6379,redis-1:6379,redis-2:6379
+    ports: ["8080:8080"]

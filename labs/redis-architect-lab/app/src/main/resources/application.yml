@@ -1,0 +1,54 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: redis-architect-lab
+  threads:
+    virtual:
+      enabled: true
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 500ms            # Redis'in işi mikrosaniye; 500 ms'yi geçen çağrı bir sorun belirtisidir, beklemeyelim
+      lettuce:
+        pool:
+          enabled: false        # Lettuce tek bağlantıyı çoklar (pipelining); havuz sadece blocking komutlar için gerekir
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+lab:
+  cache:
+    ttl: 10m
+    ttl-jitter: 2m              # aynı anda yazılan key'ler aynı anda düşmesin (cache avalanche)
+    negative-ttl: 1m
+  hotkey:
+    shards: 8
+---
+# Kubernetes / docker-compose: SPRING_PROFILES_ACTIVE=cluster
+spring:
+  config:
+    activate:
+      on-profile: cluster
+  data:
+    redis:
+      cluster:
+        nodes: ${REDIS_CLUSTER_NODES}
+        max-redirects: 3
+      lettuce:
+        cluster:
+          refresh:
+            adaptive: true      # MOVED/ASK ya da kopan bağlantıda topolojiyi hemen yenile (failover sonrası)
+            period: 5s          # ek olarak periyodik yenile. Denendi: 30 sn'de uygulama failover'dan ~30 sn sonra,
+                                # 5 sn'de ~9 sn sonra (sunucunun kendi failover süresi kadar) toparlandı. README §Failover

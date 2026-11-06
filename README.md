@@ -24,7 +24,9 @@ challenges/
     design/     # Mermaid diyagramları
     app/        # Spring Boot projesi (Maven)
     k8s/        # Kubernetes manifestleri
-INDEX.md        # tüm challenge'ların listesi
+labs/
+  <teknoloji>-lab/  # bir teknolojiyi bütün senaryolarıyla ele alan laboratuvarlar (ör. redis-architect-lab)
+INDEX.md        # tüm challenge'ların ve lab'ların listesi
 ```
 
 Tüm challenge'lar için bkz. [INDEX.md](INDEX.md).

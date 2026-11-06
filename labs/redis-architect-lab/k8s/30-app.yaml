@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-lab-app
+  namespace: redis-lab
+data:
+  SPRING_PROFILES_ACTIVE: cluster
+  # Sadece başlangıç noktaları: Lettuce birine bağlanıp bütün topolojiyi (6 düğüm, slotlar) kendisi öğrenir
+  REDIS_CLUSTER_NODES: >-
+    redis-cluster-0.redis-cluster-headless:6379,redis-cluster-1.redis-cluster-headless:6379,redis-cluster-2.redis-cluster-headless:6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-lab-app
+  namespace: redis-lab
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: redis-lab-app }
+  template:
+    metadata:
+      labels: { app: redis-lab-app }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      securityContext: { runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: app
+          image: paramix/redis-architect-lab:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: redis-lab-app }
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: redis-auth, key: REDIS_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 250m, memory: 384Mi }
+            limits: { memory: 768Mi }
+          securityContext: { allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: { drop: ["ALL"] } }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes:
+        - { name: tmp, emptyDir: {} }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-lab-app
+  namespace: redis-lab
+spec:
+  selector: { app: redis-lab-app }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: redis-lab-app
+  namespace: redis-lab
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: redis-lab-app }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }

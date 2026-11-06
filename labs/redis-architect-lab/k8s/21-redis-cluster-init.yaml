@@ -1,0 +1,42 @@
+# Cluster'ı bir kez kurar: 6 düğümü bekler, slotları 3 master'a dağıtır, her master'a bir replika atar.
+# Zaten kuruluysa hiçbir şey yapmaz (idempotent), yeniden çalıştırmak güvenli.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redis-cluster-init
+  namespace: redis-lab
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels: { app: redis-cluster-init }
+    spec:
+      restartPolicy: OnFailure
+      securityContext: { runAsUser: 999, runAsNonRoot: true, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: init
+          image: redis:7.4-alpine
+          env:
+            - name: REDISCLI_AUTH                # redis-cli parolayı buradan okur (komut satırında görünmez)
+              valueFrom: { secretKeyRef: { name: redis-auth, key: REDIS_PASSWORD } }
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -e
+              H=redis-cluster-headless.redis-lab.svc.cluster.local
+              if redis-cli -h redis-cluster-0.$H cluster info 2>/dev/null | grep -q cluster_state:ok; then
+                echo "cluster zaten kurulu"; exit 0
+              fi
+              NODES=""
+              for i in 0 1 2 3 4 5; do
+                host=redis-cluster-$i.$H
+                until redis-cli -h $host ping 2>/dev/null | grep -q PONG; do echo "$host bekleniyor"; sleep 2; done
+                ip=$(getent hosts $host | awk '{print $1}')
+                [ -z "$ip" ] && ip=$(nslookup $host | awk '/^Address: / {print $2}' | tail -1)
+                NODES="$NODES $ip:6379"
+              done
+              echo "kuruluyor:$NODES"
+              redis-cli --cluster create $NODES --cluster-replicas 1 --cluster-yes
+              until redis-cli -h redis-cluster-0.$H cluster info | grep -q cluster_state:ok; do sleep 2; done
+              redis-cli -h redis-cluster-0.$H cluster nodes
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: ["ALL"] } }
