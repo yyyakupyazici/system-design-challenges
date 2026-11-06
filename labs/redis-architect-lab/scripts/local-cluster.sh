@@ -15,8 +15,10 @@ start() {
       --logfile "$BASE/$p/redis.log" --save ""
   done
   for p in $PORTS; do until redis-cli -p "$p" ping >/dev/null 2>&1; do sleep 0.2; done; done
-  if redis-cli -p 7000 cluster info | grep -q 'cluster_state:ok'; then
-    echo "cluster zaten kurulu"; return
+  # Daha önce kurulmuşsa (nodes.conf'tan diğer düğümleri tanıyorsa) yeniden kurma, toparlanmasını bekle.
+  if [ "$(redis-cli -p 7000 cluster info | awk -F: '/cluster_known_nodes/ {print $2+0}')" -gt 1 ]; then
+    until redis-cli -p 7000 cluster info | grep -q 'cluster_state:ok'; do sleep 0.5; done
+    echo "cluster zaten kurulu, kayıtlı durumdan toparlandı"; return
   fi
   redis-cli --cluster create 127.0.0.1:7000 127.0.0.1:7001 127.0.0.1:7002 \
     127.0.0.1:7003 127.0.0.1:7004 127.0.0.1:7005 --cluster-replicas 1 --cluster-yes
