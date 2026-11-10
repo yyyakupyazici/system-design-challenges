@@ -1,0 +1,21 @@
+# WebSocket için: uzun ömürlü bağlantılar (zaman aşımı 1 saat), tamponlama kapalı. Sticky session GEREKMEZ:
+# hangi gateway'e düşülürse düşülsün rehber + Pub/Sub mesajı doğru gateway'e taşır.
+# Prod: L4 load balancer (NLB) daha uygun; L7'de her bağlantı ingress pod'unda da bellek tutar.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat-gateway
+  namespace: chat
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: chat.paramix.example
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend: { service: { name: chat-gateway, port: { number: 80 } } }

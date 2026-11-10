@@ -1,0 +1,49 @@
+flowchart LR
+    subgraph Clients["İstemciler"]
+        A[Ali · telefon]
+        Y1[Ayşe · telefon]
+        Y2[Ayşe · web]
+    end
+
+    LB[L4 Load Balancer<br/>sticky gerekmez]
+
+    subgraph GW["Gateway pod'ları ×25 · her biri ≤50.000 soket"]
+        G19["gw-19<br/>yerel defter: Ali"]
+        G7["gw-7<br/>yerel defter: Ayşe·telefon"]
+        G12["gw-12<br/>yerel defter: Ayşe·web"]
+    end
+
+    subgraph Redis["Redis (geçici)"]
+        RT["rehber<br/>conn:{user} → cihaz: gateway"]
+        AL["gw:alive<br/>gateway lease"]
+        PS(("Pub/Sub<br/>gw:&lt;id&gt; kanalları, bc"))
+    end
+
+    subgraph Durable["Kalıcı yol"]
+        DB[("PostgreSQL<br/>messages · seq · outbox<br/>payment_requests")]
+        K[[Kafka chat.events<br/>key = sohbet]]
+    end
+
+    subgraph Workers["Worker pod'ları"]
+        R[Outbox relay<br/>advisory lock: tek lider]
+        F[Fan-out worker]
+        P[Ödeme işleri<br/>reconciler · süre dolumu]
+    end
+
+    W[Cüzdan · 006]
+    N[Push · 004]
+
+    A --> LB --> G19
+    Y1 --> LB --> G7
+    Y2 --> LB --> G12
+    G19 -- "① SEND → seq ver + kaydet + outbox (tek tx)" --> DB
+    G19 -. "② ✓ SENT" .-> A
+    DB --> R -- "③" --> K --> F
+    F -- "④ üyeler + rehber + canlı gateway'ler" --> RT
+    F -- "⑤ PUBLISH gw:7, gw:12" --> PS
+    PS --> G7 --> Y1
+    PS --> G12 --> Y2
+    F -- "çevrimdışı üye" --> N
+    G7 -- "ACK / READ → imleç + makbuz olayı" --> DB
+    P <--> W
+    P --> DB

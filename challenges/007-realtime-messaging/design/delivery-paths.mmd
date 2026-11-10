@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    participant A as Ali (gw-19)
+    participant DB as PostgreSQL
+    participant K as Kafka
+    participant F as Fan-out
+    participant PS as Redis Pub/Sub
+    participant Y as Ayşe (gw-7)
+
+    A->>DB: SEND {clientMsgId}<br/>UPDATE last_seq+1 · INSERT ON CONFLICT DO NOTHING · INSERT outbox
+    DB-->>A: ✓ SENT seq=42 (kalıcı)
+    Note over A,DB: KALICI YOL — "mesaj asla kaybolmaz"
+    DB->>K: relay (outbox → chat.events, key=sohbet)
+    K->>F: olay
+    F->>PS: PUBLISH gw:7 {targets, frame}
+    PS->>Y: MSG #42 (cihaz şeridi: sıra korunur)
+    Note over K,Y: HIZLI YOL — kaybolabilir
+    Y->>DB: ACK 42 → ✓✓
+    alt hızlı yol kaybetti (gateway öldü, soket koptu)
+        Y->>DB: SYNC {imleç 41} → #42 ve sonrası
+        Note over Y,DB: KURTARMA YOLU — imleçten sonrasını ver
+    end

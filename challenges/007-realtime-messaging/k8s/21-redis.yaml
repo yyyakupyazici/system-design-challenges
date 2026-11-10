@@ -1,0 +1,36 @@
+# Yönlendirme tablosu (conn:{user}), gateway lease'i (gw:alive), son görülme ve Pub/Sub.
+# Buradaki her şey GEÇİCİ: kaybolursa mesaj kaybolmaz (DB'de), sadece gecikir. Bu yüzden kalıcılık kapalı.
+# Prod: ayrı iki Redis — rehber için küçük bir cluster, Pub/Sub için ayrı bir instance (cluster'da klasik PUBLISH
+# her mesajı bütün düğümlere kopyalar; ya SPUBLISH ya ayrı instance).
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: chat
+spec:
+  selector: { app: redis }
+  ports: [{ port: 6379 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.4-alpine
+          args: ["--save", "", "--appendonly", "no", "--maxmemory", "1gb", "--maxmemory-policy", "noeviction"]
+          ports: [{ containerPort: 6379 }]
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 500m, memory: 1200Mi }

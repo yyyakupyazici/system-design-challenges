@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: chat-config
+  namespace: chat
+data:
+  DB_URL: jdbc:postgresql://postgres:5432/chat
+  REDIS_HOST: redis
+  KAFKA_BOOTSTRAP: kafka:9092
+  KAFKA_PARTITIONS: "24"
+  KAFKA_REPLICAS: "1"            # prod: 3
+  MAX_CONNECTIONS: "50000"
+  HANDSHAKES_PER_SECOND: "2000"
+  DRAIN_SPREAD: "20s"
+  SYNC_MAX_CONCURRENT: "32"

@@ -1,0 +1,83 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: realtime-messaging
+  threads:
+    virtual:
+      enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 40s     # gateway boşaltma (drain) için süre
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/chat}
+    username: ${DB_USER:chat}
+    password: ${DB_PASSWORD:chat}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 500ms
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        linger.ms: 2
+    consumer:
+      group-id: chat-fanout
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+chat:
+  # Kubernetes'te her Deployment kendi rolünü açar: gateway pod'ları sadece gateway, worker pod'ları relay + fanout + payment.
+  roles:
+    gateway: ${ROLE_GATEWAY:true}
+    relay: ${ROLE_RELAY:true}
+    fanout: ${ROLE_FANOUT:true}
+    payment: ${ROLE_PAYMENT:true}
+  gateway:
+    name: ${GATEWAY_NAME:${HOSTNAME:gw-local}}
+    heartbeat: 5s                       # gateway canlılık kaydını bu aralıkla yeniler
+    lease: 15s                          # bu süre yenilenmezse gateway ölü sayılır, bağlantıları geçersiz olur
+    max-connections: ${MAX_CONNECTIONS:50000}
+    handshakes-per-second: ${HANDSHAKES_PER_SECOND:2000}   # geri bağlanma fırtınasında kabul hızı
+    drain-spread: ${DRAIN_SPREAD:20s}   # kapanırken istemcilerin geri bağlanmasını bu süreye yay
+    send-time-limit: 5s                 # yavaş istemci: sokete yazma bu süreyi aşarsa bağlantı kapatılır
+    send-buffer-limit: 524288
+  sync:
+    page-size: 200
+    max-concurrent: ${SYNC_MAX_CONCURRENT:32}   # aynı anda en fazla bu kadar senkron sorgusu (bulkhead)
+    new-device-history: 50              # imleci olmayan yeni cihaz her sohbetin son N mesajını alır
+  kafka:
+    topic: chat.events
+    partitions: ${KAFKA_PARTITIONS:12}
+    replicas: ${KAFKA_REPLICAS:1}
+  members-cache-ttl: 30s
+  retention:
+    messages: 365d                      # para isteği mesajları hariç (onlar payment_requests ile 5 yıl)
+    cron: "0 15 3 * * *"
+  payment:
+    request-ttl: 24h
+    reconcile-after: 10s                # PROCESSING'de bu kadar kalan istek, cüzdana aynı anahtarla tekrar sorulur

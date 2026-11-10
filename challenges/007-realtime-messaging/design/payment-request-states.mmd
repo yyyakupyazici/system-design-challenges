@@ -1,0 +1,11 @@
+stateDiagram-v2
+    [*] --> PENDING: SEND kind=PAYMENT_REQUEST (mesajla aynı tx)
+    PENDING --> PROCESSING: PAY · koşullu UPDATE (sadece biri kapar)
+    PROCESSING --> PAID: cüzdan OK · aynı tx'te sistem mesajı "ödendi"
+    PROCESSING --> PENDING: cüzdan reddetti (bakiye yetersiz) → tekrar denenebilir
+    PROCESSING --> PROCESSING: cevap belirsiz (zaman aşımı) → reconciler aynı anahtarla tekrar sorar
+    PENDING --> DECLINED: DECLINE
+    PENDING --> EXPIRED: süre doldu (job) · sistem mesajı
+    PAID --> [*]
+    DECLINED --> [*]
+    EXPIRED --> [*]

@@ -1,0 +1,59 @@
+# Worker: outbox relay (advisory lock ile tek lider, diğerleri bekler), Kafka fan-out (consumer group), ödeme işleri.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-worker
+  namespace: chat
+spec:
+  replicas: 3                                # fan-out paralelliği ≤ Kafka partition sayısı (24)
+  selector:
+    matchLabels: { app: chat-worker }
+  template:
+    metadata:
+      labels: { app: chat-worker }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      containers:
+        - name: worker
+          image: paramix/realtime-messaging:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: chat-config }
+          env:
+            - { name: ROLE_GATEWAY, value: "false" }
+            - { name: ROLE_RELAY, value: "true" }
+            - { name: ROLE_FANOUT, value: "true" }
+            - { name: ROLE_PAYMENT, value: "true" }
+            - name: GATEWAY_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: chat-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: chat-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "1", memory: 1Gi }
+            limits: { memory: 1536Mi }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chat-worker
+  namespace: chat
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: chat-worker }
+  minReplicas: 3
+  maxReplicas: 24
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }

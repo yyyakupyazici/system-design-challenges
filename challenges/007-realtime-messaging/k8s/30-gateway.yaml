@@ -1,0 +1,102 @@
+# Gateway: açık WebSocket bağlantılarını tutan pod'lar. İş mantığı yok, sadece kapıcı.
+# 1,2 milyon bağlantı / 50.000 pod başına = en az 25 pod.
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-gateway
+  namespace: chat
+spec:
+  selector: { app: chat-gateway }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-gateway
+  namespace: chat
+spec:
+  replicas: 25
+  strategy:
+    # Rolling deploy'da aynı anda en fazla 2 pod (100.000 bağlantı) yer değiştirsin; her biri bağlantılarını
+    # 20 sn'ye yayarak boşaltır (RECONNECT afterMs), fırtına olmaz.
+    rollingUpdate: { maxUnavailable: 2, maxSurge: 2 }
+  selector:
+    matchLabels: { app: chat-gateway }
+  template:
+    metadata:
+      labels: { app: chat-gateway }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      terminationGracePeriodSeconds: 60      # boşaltma (20 sn yayma) + pay
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: chat-gateway } }
+      containers:
+        - name: gateway
+          image: paramix/realtime-messaging:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: chat-config }
+          env:
+            - { name: ROLE_GATEWAY, value: "true" }
+            - { name: ROLE_RELAY, value: "false" }
+            - { name: ROLE_FANOUT, value: "false" }
+            - { name: ROLE_PAYMENT, value: "false" }
+            - name: GATEWAY_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: chat-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: chat-secrets, key: DB_PASSWORD } }
+            - { name: JAVA_TOOL_OPTIONS, value: "-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError" }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          lifecycle:
+            preStop: { sleep: { seconds: 5 } }    # önce endpoint listesinden düş, sonra boşalt
+          resources:
+            requests: { cpu: "2", memory: 4Gi }   # 50.000 soket × ~30-50 KB tampon
+            limits: { memory: 4Gi }
+---
+# CPU, bağlantı tutan bir pod için kötü bir ölçek sinyali (bağlantılar boşta da bellek tutar). Asıl sinyal pod başına
+# bağlantı sayısı (chat_gateway_connections) — Prometheus Adapter ile custom metric. Burada CPU yedek sinyal.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chat-gateway
+  namespace: chat
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: chat-gateway }
+  minReplicas: 25
+  maxReplicas: 60
+  metrics:
+    - type: Pods
+      pods:
+        metric: { name: chat_gateway_connections }
+        target: { type: AverageValue, averageValue: "40000" }    # 50.000 tavanın %80'i
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 70 } }
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 900        # küçülmek bağlantı koparmak demek: yavaş küçül
+      policies: [{ type: Pods, value: 1, periodSeconds: 120 }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chat-gateway
+  namespace: chat
+spec:
+  maxUnavailable: 2
+  selector:
+    matchLabels: { app: chat-gateway }
