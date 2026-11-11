@@ -47,7 +47,7 @@ spec:
             - { name: ROLE_GATEWAY, value: "true" }
             - { name: ROLE_RELAY, value: "false" }
             - { name: ROLE_FANOUT, value: "false" }
-            - { name: ROLE_PAYMENT, value: "false" }
+            - { name: ROLE_PAYMENT_CARDS, value: "false" }
             - name: GATEWAY_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: DB_USER

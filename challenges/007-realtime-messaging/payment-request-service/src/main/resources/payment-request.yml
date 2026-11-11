@@ -1,0 +1,53 @@
+# Dosya adı application.yml DEĞİL: sohbet servisiyle aynı JVM'de (uçtan uca test) çalışınca ayarlar karışmasın.
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: payment-request-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/payreq}
+    username: ${DB_USER:payreq}
+    password: ${DB_PASSWORD:payreq}
+  flyway:
+    locations: classpath:db/payreq-migration
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+    consumer:
+      group-id: payment-requests
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: record
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+payreq:
+  request-ttl: 24h
+  reconcile-after: 10s           # PROCESSING'de bu kadar kalan istek cüzdana aynı anahtarla tekrar sorulur
+  reconcile-every: 2s
+  topics:
+    events: payment.events       # bu servisin yayınladığı olaylar (sahibi bu servis)
+    wallet: wallet.events        # 006'daki cüzdanın olayları (sahibi cüzdan)
+    partitions: ${KAFKA_PARTITIONS:12}
+    replicas: ${KAFKA_REPLICAS:1}

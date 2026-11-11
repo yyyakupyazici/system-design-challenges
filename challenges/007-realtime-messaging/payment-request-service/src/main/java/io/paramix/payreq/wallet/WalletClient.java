@@ -1,4 +1,4 @@
-package io.paramix.chat.payment;
+package io.paramix.payreq.wallet;
 
 /**
  * 006'daki cüzdan çekirdeğine giden arayüz. Sözleşme: aynı {@code idempotencyKey} ile kaç kez çağrılırsa çağrılsın

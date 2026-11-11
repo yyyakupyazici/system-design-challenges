@@ -14,7 +14,6 @@ import io.paramix.chat.message.ConversationRepository;
 import io.paramix.chat.message.MessageService;
 import io.paramix.chat.message.MessageService.SendCommand;
 import io.paramix.chat.message.MessageService.SendResult;
-import io.paramix.chat.payment.PaymentRequestService;
 import io.paramix.chat.presence.PresenceService;
 import io.paramix.chat.protocol.Frames;
 import io.paramix.chat.protocol.Json;
@@ -45,7 +44,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     private final GatewayIdentity identity;
     private final ConversationRepository conversations;
     private final MessageService messages;
-    private final PaymentRequestService payments;
     private final PresenceService presence;
     private final EphemeralRelay ephemeral;
     private final ChatProperties props;
@@ -54,14 +52,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     public ChatWebSocketHandler(LocalSessions sessions, RoutingTable routing, GatewayIdentity identity,
                                 ConversationRepository conversations, MessageService messages,
-                                PaymentRequestService payments, PresenceService presence, EphemeralRelay ephemeral,
+                                PresenceService presence, EphemeralRelay ephemeral,
                                 ChatProperties props, Json json, MeterRegistry meters) {
         this.sessions = sessions;
         this.routing = routing;
         this.identity = identity;
         this.conversations = conversations;
         this.messages = messages;
-        this.payments = payments;
         this.presence = presence;
         this.ephemeral = ephemeral;
         this.props = props;
@@ -138,9 +135,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         return switch (type) {
             case "SEND" -> {
                 SendResult r = messages.send(user, device, new SendCommand(uuid(f, "clientMsgId"),
-                        f.path("conversationId").asLong(), text(f, "kind"), text(f, "body"),
-                        f.has("amountKurus") ? f.get("amountKurus").asLong() : null,
-                        f.has("payerId") ? f.get("payerId").asLong() : null));
+                        f.path("conversationId").asLong(), text(f, "kind"), text(f, "body")));
                 yield Frames.sent(r.message().clientMsgId(), r.message().conversationId(), r.message().seq(),
                         r.message().serverTime(), r.duplicate());
             }
@@ -166,14 +161,6 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                 List<Long> ids = new ArrayList<>();
                 f.path("userIds").forEach(n -> ids.add(n.asLong()));
                 yield presence.query(ids);
-            }
-            case "PAY" -> {
-                long id = f.path("paymentRequestId").asLong();
-                yield Frames.of("PAY_RESULT", "paymentRequestId", id, "status", payments.pay(user, id));
-            }
-            case "DECLINE" -> {
-                long id = f.path("paymentRequestId").asLong();
-                yield Frames.of("DECLINE_RESULT", "paymentRequestId", id, "declined", payments.decline(user, id));
             }
             case "PING" -> Frames.of("PONG");
             default -> throw new ChatException("BAD_REQUEST", "bilinmeyen çerçeve türü: " + type);

@@ -20,14 +20,20 @@ flowchart LR
     end
 
     subgraph Durable["Kalıcı yol"]
-        DB[("PostgreSQL<br/>messages · seq · outbox<br/>payment_requests")]
+        DB[("PostgreSQL chat<br/>messages · seq · outbox<br/>payment_cards (kopya)")]
         K[[Kafka chat.events<br/>key = sohbet]]
     end
 
     subgraph Workers["Worker pod'ları"]
         R[Outbox relay<br/>advisory lock: tek lider]
         F[Fan-out worker]
-        P[Ödeme işleri<br/>reconciler · süre dolumu]
+        C[Kart projeksiyonu<br/>payment.events → kart + mesaj]
+    end
+
+    subgraph PayReq["payment-request-service (para isteğinin SAHİBİ)"]
+        PR[HTTP API<br/>oluştur · öde · reddet]
+        PDB[("PostgreSQL payreq<br/>payment_requests · outbox")]
+        PK[[Kafka payment.events<br/>key = istek id · snapshot + sürüm]]
     end
 
     W[Cüzdan · 006]
@@ -45,5 +51,7 @@ flowchart LR
     PS --> G12 --> Y2
     F -- "çevrimdışı üye" --> N
     G7 -- "ACK / READ → imleç + makbuz olayı" --> DB
-    P <--> W
-    P --> DB
+    A -- "para iste / öde (HTTP)" --> PR
+    PR --> PDB --> PK --> C --> DB
+    PR <--> W
+    W -- "wallet.events" --> PR

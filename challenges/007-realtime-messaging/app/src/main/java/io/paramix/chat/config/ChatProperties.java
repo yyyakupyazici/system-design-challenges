@@ -8,9 +8,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
 @ConfigurationProperties("chat")
 public record ChatProperties(Roles roles, Gateway gateway, Sync sync, Kafka kafka,
                              @DefaultValue("30s") Duration membersCacheTtl,
-                             Retention retention, Payment payment, Retry retry) {
+                             Retention retention, Retry retry) {
 
-    public record Roles(boolean gateway, boolean relay, boolean fanout, boolean payment) {
+    public record Roles(boolean gateway, boolean relay, boolean fanout, boolean paymentCards) {
     }
 
     public record Gateway(String name, Duration heartbeat, Duration lease, int maxConnections, int handshakesPerSecond,
@@ -29,8 +29,5 @@ public record ChatProperties(Roles roles, Gateway gateway, Sync sync, Kafka kafk
     }
 
     public record Retention(Duration messages, String cron) {
-    }
-
-    public record Payment(Duration requestTtl, Duration reconcileAfter) {
     }
 }

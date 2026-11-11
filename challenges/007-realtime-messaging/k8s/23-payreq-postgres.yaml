@@ -1,0 +1,47 @@
+# payment-request-service'in veritabanı. Sohbetin veritabanından AYRI: para isteğinin tek sahibi o servis.
+# Prod: yönetilen PostgreSQL (ör. RDS) + PITR yedek; para verisi 5+ yıl saklanır.
+apiVersion: v1
+kind: Service
+metadata:
+  name: payreq-postgres
+  namespace: chat
+spec:
+  selector: { app: payreq-postgres }
+  ports: [{ port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: payreq-postgres
+  namespace: chat
+spec:
+  serviceName: payreq-postgres
+  replicas: 1
+  selector:
+    matchLabels: { app: payreq-postgres }
+  template:
+    metadata:
+      labels: { app: payreq-postgres }
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16-alpine
+          env:
+            - { name: POSTGRES_DB, value: payreq }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: payreq-secrets, key: DB_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: payreq-secrets, key: DB_PASSWORD } }
+          ports: [{ containerPort: 5432 }]
+          readinessProbe:
+            exec: { command: ["pg_isready", "-U", "payreq"] }
+            periodSeconds: 5
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+          resources:
+            requests: { cpu: 500m, memory: 1Gi }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 20Gi } }

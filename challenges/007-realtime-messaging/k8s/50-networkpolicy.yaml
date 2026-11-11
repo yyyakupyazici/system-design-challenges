@@ -5,14 +5,43 @@ metadata:
   namespace: chat
 spec:
   podSelector:
-    matchExpressions: [{ key: app, operator: In, values: [postgres, redis, kafka] }]
+    matchExpressions: [{ key: app, operator: In, values: [postgres, redis] }]
   policyTypes: [Ingress]
   ingress:
     - from:
         - podSelector: { matchLabels: { app: chat-gateway } }
         - podSelector: { matchLabels: { app: chat-worker } }
     - from:
+---
+# Kafka: sohbet pod'ları + payment-request-service (payment.events yayınlar, wallet.events dinler)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kafka
+  namespace: chat
+spec:
+  podSelector: { matchLabels: { app: kafka } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: chat-gateway } }
+        - podSelector: { matchLabels: { app: chat-worker } }
+        - podSelector: { matchLabels: { app: payment-request-service } }
         - podSelector: { matchLabels: { app: kafka } }     # KRaft controller ↔ broker
+---
+# Ödeme veritabanına SADECE payment-request-service erişir. Sohbet bu tabloyu okuyamaz bile: sınır kodla değil ağla da çizili.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payreq-postgres
+  namespace: chat
+spec:
+  podSelector: { matchLabels: { app: payreq-postgres } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: payment-request-service } }
+      ports: [{ port: 5432 }]
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -21,6 +50,19 @@ metadata:
   namespace: chat
 spec:
   podSelector: { matchLabels: { app: chat-gateway } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: ingress-nginx } }
+      ports: [{ port: 8080 }]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: payment-request-service-ingress
+  namespace: chat
+spec:
+  podSelector: { matchLabels: { app: payment-request-service } }
   policyTypes: [Ingress]
   ingress:
     - from:

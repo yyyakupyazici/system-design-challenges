@@ -22,6 +22,14 @@
     </properties>
 
     <dependencies>
+        <!-- Sadece uçtan uca test için: gerçek payment-request-service aynı JVM'de başlatılır.
+             Üretim kodu bu modülü import ETMEZ; iki servis sadece payment.events JSON sözleşmesiyle bağlı. -->
+        <dependency>
+            <groupId>io.paramix</groupId>
+            <artifactId>payment-request-service</artifactId>
+            <version>0.1.0-SNAPSHOT</version>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>

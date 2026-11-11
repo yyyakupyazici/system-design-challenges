@@ -1,4 +1,4 @@
-package io.paramix.chat.payment;
+package io.paramix.payreq.wallet;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 

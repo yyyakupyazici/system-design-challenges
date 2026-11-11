@@ -16,8 +16,9 @@ public class MessageRepository {
 
     private static final String SELECT = """
             SELECT m.conversation_id, m.seq, m.sender_id, m.client_msg_id, m.kind, m.body, m.server_time,
-                   p.id AS pr_id, p.status AS pr_status, p.amount_kurus AS pr_amount, p.payer_id AS pr_payer
-            FROM messages m LEFT JOIN payment_requests p ON p.id = m.payment_request_id
+                   p.payment_request_id AS pr_id, p.status AS pr_status, p.amount_kurus AS pr_amount,
+                   p.payer_id AS pr_payer, p.requester_id AS pr_requester, p.version AS pr_version
+            FROM messages m LEFT JOIN payment_cards p ON p.payment_request_id = m.payment_request_id
             """;
 
     private final JdbcClient jdbc;
@@ -77,6 +78,8 @@ public class MessageRepository {
             pr.put("status", rs.getString("pr_status"));
             pr.put("amountKurus", rs.getLong("pr_amount"));
             pr.put("payerId", rs.getLong("pr_payer"));
+            pr.put("requesterId", rs.getLong("pr_requester"));
+            pr.put("version", rs.getInt("pr_version"));
         }
         return new MessageView(rs.getLong(1), rs.getLong(2), rs.getLong(3), rs.getString(4), rs.getString(5),
                 rs.getString(6), rs.getTimestamp(7).toInstant().toString(), pr);

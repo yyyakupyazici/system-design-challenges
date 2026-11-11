@@ -50,6 +50,23 @@ public final class TestInfra {
         return System.getenv("IT_PG_URL") != null ? System.getenv().getOrDefault("IT_PG_PASSWORD", "") : postgres().getPassword();
     }
 
+    /** payment-request-service'in KENDİ veritabanı (aynı PostgreSQL sunucusunda ayrı bir veritabanı: "payreq"). */
+    public static synchronized String payreqPgUrl() {
+        if (System.getenv("IT_PAYREQ_PG_URL") != null) {
+            return System.getenv("IT_PAYREQ_PG_URL");
+        }
+        String url = pgUrl().replaceFirst("/[^/?]+(\\?|$)", "/payreq$1");
+        try (java.sql.Connection c = java.sql.DriverManager.getConnection(pgUrl(), pgUser(), pgPassword());
+             java.sql.Statement st = c.createStatement()) {
+            if (!st.executeQuery("SELECT 1 FROM pg_database WHERE datname = 'payreq'").next()) {
+                st.execute("CREATE DATABASE payreq");
+            }
+        } catch (java.sql.SQLException e) {
+            throw new IllegalStateException("payreq veritabanı oluşturulamadı", e);
+        }
+        return url;
+    }
+
     private static GenericContainer<?> redis() {
         if (redis == null) {
             redis = new GenericContainer<>(DockerImageName.parse("redis:7.4-alpine")).withExposedPorts(6379);

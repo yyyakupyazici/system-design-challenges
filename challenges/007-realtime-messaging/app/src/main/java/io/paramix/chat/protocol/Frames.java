@@ -10,8 +10,8 @@ import io.paramix.chat.message.MessageView;
  * Sunucudan istemciye giden çerçeveler (WebSocket üzerinden JSON). Her çerçevenin bir "type" alanı var.
  *
  * <pre>
- *  İstemci → sunucu:  SEND, ACK, READ, SYNC, TYPING, PRESENCE_QUERY, PAY, PING
- *  Sunucu → istemci:  SENT (✓), MSG, RECEIPT (✓✓ / okundu), SYNC_RESULT, TYPING, PRESENCE, PAY_RESULT,
+ *  İstemci → sunucu:  SEND, ACK, READ, SYNC, HEADS, TYPING, PRESENCE_QUERY, PING
+ *  Sunucu → istemci:  SENT (✓), MSG, RECEIPT (✓✓ / okundu), SYNC_RESULT, TYPING, PRESENCE,
  *                     RECONNECT (gateway kapanıyor: şu kadar bekleyip yeniden bağlan), ERROR, PONG
  * </pre>
  */

@@ -1,0 +1,40 @@
+sequenceDiagram
+    autonumber
+    participant Ali as Ali · uygulama
+    participant Ay as Ayşe · telefon + web
+    participant PR as payment-request-service
+    participant PDB as PostgreSQL payreq
+    participant W as Cüzdan (006)
+    participant K as Kafka payment.events
+    participant C as Sohbet · kart projeksiyonu
+    participant CDB as PostgreSQL chat
+    participant GW as Gateway'ler
+
+    Ali->>PR: POST /v1/payment-requests (Idempotency-Key, origin CHAT:81)
+    PR->>PDB: tek tx: payment_requests PENDING v1 + outbox CREATED
+    PR-->>Ali: 201 {id: 31, PENDING}
+    PDB-->>K: relay (advisory lock lideri) · key = 31
+    K->>C: CREATED v1 (tam anlık görüntü)
+    C->>CDB: üyelik kontrolü · tek tx: payment_cards v1 + kart mesajı (seq) + outbox
+    CDB-->>GW: chat.events → fan-out → Pub/Sub
+    GW-->>Ay: MSG kart (PENDING)
+    GW-->>Ali: MSG kart (PENDING)
+
+    par telefon ve web aynı anda
+        Ay->>PR: POST /31/pay
+    and
+        Ay->>PR: POST /31/pay
+    end
+    PR->>PDB: koşullu UPDATE PENDING→PROCESSING (sadece biri kazanır)
+    PR->>W: transfer(key "payreq-31")
+    W-->>PR: OK trf_x
+    PR->>PDB: tek tx: PAID v3 + outbox PAID
+    PR-->>Ay: PAID / ALREADY_PAID
+    PDB-->>K: PAID v3
+    K->>C: PAID v3
+    C->>CDB: tek tx: kart v1→v3 (WHERE version < 3) + "✅ 250,00 TL ödendi" + outbox
+    CDB-->>GW: fan-out
+    GW-->>Ali: MSG sistem mesajı + kart PAID
+    GW-->>Ay: MSG (diğer cihaz da günceller)
+
+    Note over K,C: Tekrar gelen ya da eski sürümlü olay → STALE, hiçbir şey yazılmaz.<br/>PAID, CREATED'dan önce gelirse kart PAID olarak kurulur, geç gelen CREATED yok sayılır.

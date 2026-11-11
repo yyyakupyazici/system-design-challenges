@@ -10,7 +10,7 @@ WebSocket gateway'leri, Redis'te yönlendirme tablosu ve Pub/Sub, sohbet başın
 
 Paramix uygulamasına sohbet ekleniyor:
 - Birebir ve grup mesajları (grup en fazla 500 kişi).
-- Sohbet içinde **para isteği**. Ödeme 006'daki cüzdandan geçiyor.
+- Sohbet içinde **para isteği**. Ödeme 006'daki cüzdandan geçiyor. Para isteği ayrı bir servis (`payment-request-service`), sohbet sadece kartını gösteriyor (§5.8).
 - Destek sohbeti.
 - 2 milyon aboneli, tek yönlü **kampanya kanalı**.
 
@@ -45,7 +45,7 @@ Tek sunuculu deneme sürümünde yaşananlar:
 
 ## 4. Mimari
 
-Diyagramlar: [mimari](design/architecture.mmd) · [üç yol (kalıcı, hızlı, kurtarma)](design/delivery-paths.mmd) · [para isteği durumları](design/payment-request-states.mmd)
+Diyagramlar: [mimari](design/architecture.mmd) · [üç yol (kalıcı, hızlı, kurtarma)](design/delivery-paths.mmd) · [para isteği durumları](design/payment-request-states.mmd) · [para isteği: iki servis arası akış](design/payment-request-flow.mmd)
 
 ```
 Kalıcı yol:    istemci → gateway → mesaj servisi → DB (seq + mesaj + outbox, tek transaction) → ✓
@@ -95,7 +95,7 @@ messages (conversation_id, seq, sender_id, client_msg_id, kind, body, payment_re
     PRIMARY KEY (conversation_id, seq)
     UNIQUE (conversation_id, client_msg_id)                         -- idempotency
 device_cursors (user_id, device_id, conversation_id, delivered_seq) -- yeni bağlanan cihaz buradan senkronlar
-payment_requests (id, conversation_id, requester_id, payer_id, amount_kurus, status, wallet_transfer_id, expires_at)
+payment_cards (payment_request_id, conversation_id, requester_id, payer_id, amount_kurus, status, version)  -- salt okunur kart (§5.8)
 outbox (id, conversation_id, payload)
 ```
 
@@ -151,35 +151,72 @@ Gateway, bağlanan kullanıcının abone olduğu kanalları bağlantı anında y
 - **Okundu:** `READ` → kullanıcının okuma imleci (bütün cihazlar için tek) → olay bütün üyelere ve okuyanın diğer cihazlarına gider: "telefonda okudum, web'de de okundu."
 - **Senkron:** istemci imleçlerini gönderir. Yoksa sunucudaki cihaz imleci, o da yoksa (yeni cihaz) her sohbetin son 50 mesajı. Sayfa 200 mesaj, `hasMore` ile devam.
 
-### 5.8 Para isteği (zorluk #8)
+### 5.8 Para isteği (zorluk #8): ayrı servis, sohbette sadece kart
 
-[Durum diyagramı](design/payment-request-states.mmd). Mesaj servisi ile cüzdan ayrı sistemler, aralarında dağıtık transaction yok. Tutarlılık **iki yönlü** bir bağlantıdan ve üç yoldan geliyor.
+[İki servis arası akış](design/payment-request-flow.mmd) · [durum diyagramı](design/payment-request-states.mmd)
 
-**Sohbet → cüzdan (senkron çağrı):**
-1. **Kapma:** `PENDING → PROCESSING` koşullu `UPDATE`. İki cihazdan aynı anda "Öde"ye basılsa da sadece biri cüzdanı çağırır.
-2. **Cüzdan:** `transfer(idempotencyKey = "payreq-<id>")`. Aynı anahtarla tekrar = aynı transfer.
-3. **Kapanış:** `PROCESSING → PAID` ve sohbete **sistem mesajı** ("✅ 250,00 TL ödendi") **aynı transaction'da**.
+**İlk sürümde** para isteği sohbet servisinin içindeydi: `SEND kind=PAYMENT_REQUEST` mesajla aynı transaction'da `payment_requests` satırı açıyor, `PAY` çerçevesi cüzdanı çağırıyordu. Çalışıyordu, ama yanlış yerdeydi:
 
-Senkron, çünkü "Öde"ye basan kullanıcı sonucu birkaç yüz milisaniyede görmek istiyor.
+| Soru | Sohbetin içindeyken | Neden sorun |
+|---|---|---|
+| Para isteği sadece sohbetten mi gelir? | Evet, `conversation_id NOT NULL` | Ödeme linki, fatura, uygulama içi "iste" ekranı da para isteği. Her biri sohbet servisine bağımlı olurdu |
+| "Öde" butonu neye bağlı? | Gateway'in WebSocket'ine | Gateway drain/deploy sırasında para hareketi kesilir. Para akışı en az değişen, en çok denetlenen kod olmalı; sohbet en sık deploy edilen |
+| Kim denetlenir? | Sohbet kodunun tamamı (para tablosuna yazabiliyor) | Ödeme denetimi (PCI, BDDK) bütün sohbet ekibini kapsar |
+| Tutarlılık | Sohbet + para tek veritabanında, tek transaction | Kolay ama bağlar: biri ölçeklenirken diğeri de taşınmak zorunda |
 
-**Cüzdan → sohbet (olay):** 006'daki cüzdan her transferi outbox ile `wallet.events` topic'ine yayınlıyor (fraud, muhasebe ve bildirim de dinliyor). Sohbet servisi bu topic'i kendi consumer group'unda (`chat-payments`) dinler:
+**Bounded context:** para isteğinin kuralları (kim ödeyebilir, süre, idempotent ödeme, iade) ödeme alanına ait. Sohbet onun **bir görünümü** (kart). Doğru sınır:
 
-| Olay | Sohbette ne olur |
+```
+payment-request-service  (SAHİBİ)                         sohbet (GÖRÜNÜM)
+  HTTP: oluştur / öde / reddet / sorgula                    payment.events'i dinler
+  kendi veritabanı: payment_requests + outbox                payment_cards (salt okunur kopya)
+  durum makinesi, cüzdan, reconciler, süre dolumu           kart mesajı + "✅ ödendi" sistem mesajı
+  wallet.events'i dinler (dışarıdan ödeme, iade)            para mantığı YOK
+            │                                                  ▲
+            └──── outbox → Kafka "payment.events" (key = istek id) ──┘
+```
+
+**Akış:**
+1. Ali'nin uygulaması `POST /v1/payment-requests` (`Idempotency-Key`, `origin: {kind: CHAT, ref: <sohbet id>}`) → servis `PENDING` yazar ve aynı transaction'da `CREATED` olayı (outbox).
+2. Sohbet olayı alır, iki kişinin de sohbetin üyesi olduğunu kontrol eder, kartı ve kart mesajını yazar (gönderen = Ali). Hızlı yol iki tarafa da `MSG` iletir.
+3. Ayşe kartta "Öde"ye basar → uygulama `POST /v1/payment-requests/{id}/pay` (sohbete DEĞİL). Kapma (`PENDING → PROCESSING`, koşullu `UPDATE`) → cüzdan `transfer("payreq-<id>")` → `PAID` + `PAID` olayı (tek tx).
+4. Sohbet `PAID` olayını alır → kartı günceller + "✅ 250,00 TL ödendi". Ayşe'nin uygulaması sonucu HTTP cevabından zaten biliyor; diğer cihazlar ve Ali olaydan öğrenir.
+
+**Ödeme tarafının üç yolu** (servis içinde, değişmedi): hızlı yol (cüzdanın senkron cevabı), olay yolu (`wallet.events`: cevap kayboldu, sohbet dışından ödeme, sonradan iade), güvenlik ağı (reconciler `PROCESSING`'de takılanları aynı anahtarla tekrar sorar). Hepsi aynı koşullu geçişlerden geçer: hangisi önce gelirse o yazar, olay bir kez yayınlanır.
+
+| `wallet.events` olayı | Para isteği |
 |---|---|
-| `TRANSFER_COMPLETED` + anahtar `payreq-<id>` | `PENDING`/`PROCESSING`/`EXPIRED`/`DECLINED` → `PAID` + sistem mesajı. **Sohbet dışından yapılan ödeme** (cüzdan ekranı, destek) ve süresi dolduktan sonra yapılan ödeme de yansır: para gittiyse sohbet bunu göstermeli |
-| `TRANSFER_REVERSED` | `PAID → REVERSED` + "↩️ ödeme iade edildi" (chargeback, fraud iptali) |
-| Tutar uyuşmuyor | Durum değiştirilmez, alarm metriği (`chat.payment.amount_mismatch`). Sessizce "ödendi" demek yanlış, insan bakmalı |
-| Anahtar `payreq-` ile başlamıyor | Yok sayılır (para isteğinden gelmeyen bir transfer) |
+| `TRANSFER_COMPLETED` + anahtar `payreq-<id>` | `PENDING`/`PROCESSING`/`EXPIRED`/`DECLINED` → `PAID`. Para gittiyse istek "ödendi" olmalı |
+| `TRANSFER_REVERSED` | `PAID → REVERSED` (chargeback, fraud iptali) |
+| Tutar uyuşmuyor | Durum değişmez, alarm (`payreq.amount_mismatch`). İnsan bakmalı |
+| Anahtar `payreq-` ile başlamıyor | Yok sayılır |
 
-**Üç yol birlikte:**
+**Olay sözleşmesi (`payment.events`):** her olay isteğin **tam anlık görüntüsü + sürüm numarası**:
 
-| Yol | Ne zaman işe yarar |
+```json
+{"type":"PAID","paymentRequestId":31,"version":3,"status":"PAID","requesterId":7,"payerId":9,
+ "amountKurus":25000,"description":"Akşam yemeği","originKind":"CHAT","originRef":"81","reason":null}
+```
+
+- **Sürüm:** her durum geçişinde `version = version + 1` (`PROCESSING` gibi olay üretmeyen geçişler de artırır, bu yüzden sürümler 1, 3, 4 gibi atlayabilir). Sohbet kartı `UPDATE ... WHERE payment_cards.version < yeni` ile günceller: **tekrar gelen ya da eski olay hiçbir şey değiştirmez**, tek SQL, yarışsız.
+- **Anlık görüntü:** olay sadece "PAID oldu" demiyor, kartı kurmak için gereken her şeyi taşıyor. "Ödendi" olayı "oluşturuldu"dan önce gelse bile (tüketici yeniden dengelendi, eski olay geç kaldı) sohbet kartı doğru kurar; geç gelen `CREATED` (sürüm 1) yok sayılır. Kafka key = istek id olduğu için aynı isteğin olayları normalde sıralı gelir; sıra karışıklığına dayanıklılık ek güvence.
+- **Bağımsız sözleşme:** sohbet servisi olay sınıfını kendisi tanımlar (`paymentcard.PaymentRequestEvent`), ödeme servisinin kodunu import etmez. Bilinmeyen alanlar yok sayılır: ödeme servisi alan ekleyince sohbet bozulmaz.
+
+**Sohbet tarafı (`PaymentCardsConsumer`, consumer group `chat-payment-cards`):** tek transaction'da kart + mesaj + outbox.
+
+| Durum | Ne olur |
 |---|---|
-| **Hızlı yol** (senkron cevap) | Normal durum: basan cihaz sonucu hemen görür |
-| **Olay yolu** (`wallet.events`) | Cevap kayboldu → saniyeler içinde kapanır. Sohbet dışından ödeme, sonradan iade |
-| **Güvenlik ağı** (reconciler) | Olay da bir şekilde kayboldu → `PROCESSING`'de takılanları aynı anahtarla cüzdana tekrar sorar |
+| Kart yok | Kartı yaz + kart mesajı (`PAYMENT_REQUEST`, gönderen = isteyen). Olay `CREATED` değilse durum mesajı da |
+| Daha yeni sürüm | Kartı güncelle + durum mesajı ("✅ ödendi", "❌ reddedildi", "⌛ süresi doldu", "↩️ iade edildi") |
+| Eski sürüm / tekrar | Hiçbir şey |
+| `origin` CHAT değil | Yok sayılır (ödeme linki, fatura) |
+| İsteyen ya da ödeyen sohbetin üyesi değil | **Kart yazılmaz.** `originRef`'i isteyen kişi yazıyor; kontrol olmasa biri yabancı bir sohbete kart düşürebilirdi |
 
-Üçü de aynı koşullu durum geçişlerinden geçer ve sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`). **Hangi yol önce gelirse o yazar, diğerleri etkisiz kalır**, sohbete aynı "ödendi" mesajı iki kez düşmez. Olay, senkron cevaptan önce de gelebilir (cüzdan yavaşsa). Bu da testte kanıtlandı. Bu, mesaj teslimindeki kalıcı / hızlı / kurtarma yollarının aynı mantığı.
+Mesajların `client_msg_id`'si deterministik (`payreq:<id>:CARD`, `payreq:<id>:PAID`): aynı olay iki kez işlense de mesaj bir kez yazılır. Kart mesajını sonradan senkronla çeken cihaz onu **güncel** durumla görür (mesaj `payment_cards`'a join'li okunur).
+
+**Bedeli:** iki servis arasında artık tek transaction yok. Kart, ödemeden birkaç yüz ms sonra güncellenir (outbox relay + Kafka). Bu kabul edilebilir çünkü "Öde"ye basan kişi sonucu HTTP cevabından anında alıyor; gecikme sadece diğer cihazların kartında. Karşılığında: para akışı sohbetin deploy'undan bağımsız, aynı servis linkten ve faturadan gelen istekleri de karşılıyor, ve ödeme verisine sadece ödeme servisi erişiyor (k8s `NetworkPolicy` ile ağ seviyesinde de).
+
+**Mimar dersi:** "Bu veri kime ait?" sorusunu, verinin **nerede göründüğüne** bakarak değil, **kuralları kimin koyduğuna** bakarak cevapla. Kart sohbette görünür ama kuralları ödemenin. Görünüm, sahibin olaylarından kurulan bir kopyadır (read model); kopyanın tutarlılığı sürüm numarası ve idempotent yazmayla sağlanır, dağıtık transaction'la değil.
 
 ### 5.9 Ağ topolojisi
 
@@ -225,18 +262,36 @@ Gateway, Redis yokken de bağlantı kabul eder ve mesaj gönderimi (DB yolu) ça
 
 ## 6. Kod
 
-`app/`: Spring Boot 3.5 / Java 21 / Spring WebSocket / PostgreSQL / Redis / Kafka. Tek imaj, roller env ile seçilir.
+İki Maven modülü, üst `pom.xml` ile birlikte derlenir:
+
+| Modül | Ne | Veritabanı | Dış arayüz |
+|---|---|---|---|
+| `payment-request-service/` | Para isteğinin sahibi | `payreq` (kendi) | HTTP `/v1/payment-requests`, yayınlar: `payment.events`, dinler: `wallet.events` |
+| `app/` | Sohbet: gateway + worker (tek imaj, roller env ile) | `chat` | WebSocket `/ws`, REST, dinler: `payment.events` |
+
+Spring Boot 3.5 / Java 21 / Spring WebSocket / PostgreSQL / Redis / Kafka. `app` ödeme modülünü sadece **test** bağımlılığı olarak görür (uçtan uca test için); üretim kodu import etmez.
+
+**`app` paketleri:**
 
 | Paket | İçerik |
 |---|---|
 | `gateway` | `ChatWebSocketHandler`, `WebSocketConfig` (el sıkışmada kabul kontrolü), `LocalSessions`, `RoutingTable`, `LiveGateways`, `GatewayInbox` (cihaz şeritleri), `PubSubHealth` (sonda + RESYNC), `GatewayDrainer`, `AdmissionLimiter` |
-| `message` | `MessageService` (gönder, ACK, READ, senkron, geçmiş), repository'ler |
+| `message` | `MessageService` (gönder, ACK, READ, senkron, geçmiş), `MessagePoster` (sunucu adına mesaj: kart, durum), repository'ler |
 | `outbox` | `OutboxWriter`, `OutboxRelay` (advisory lock lideri), `RetentionJob` |
 | `fanout` | `FanoutWorker` (Kafka), `DeliveryRouter`, `DeliveryPublisher`, `EphemeralRelay` (yazıyor) |
 | `presence` | `PresenceService` |
-| `payment` | `PaymentRequestService`, `WalletEventsConsumer` (cüzdan olayları), `PaymentJobs` (reconciler, süre dolumu), `SystemMessages`, `WalletClient` (+ test için `FakeWalletClient`) |
+| `paymentcard` | `PaymentCardsConsumer` (payment.events → kart + mesaj), `PaymentCardRepository` (sürümlü upsert), `PaymentRequestEvent` (sözleşme) |
 | `push` | `PushWorker` (ayrı consumer group), `PushSender` (üretimde 004'ün bildirim platformu) |
 | `api` | REST: geçmiş, presence, demo kullanıcı/sohbet oluşturma |
+
+**`payment-request-service` paketleri:**
+
+| Paket | İçerik |
+|---|---|
+| `api` | `PaymentRequestController`: `POST /v1/payment-requests` (Idempotency-Key), `POST /{id}/pay`, `POST /{id}/decline`, `GET /{id}`, `GET /pending` |
+| `domain` | `PaymentRequestService` (durum makinesi; her geçiş + olay tek tx), `PaymentRequestRepository` (koşullu geçişler, `version + 1`), `PaymentJobs` (reconciler, süre dolumu) |
+| `outbox` | `Outbox` (olay yazma, `MANDATORY` tx), `OutboxRelay` (advisory lock lideri → `payment.events`) |
+| `wallet` | `WalletClient` (+ `FakeWalletClient`), `WalletEventsConsumer` (`wallet.events`) |
 
 ### WebSocket protokolü
 
@@ -244,47 +299,50 @@ Gateway, Redis yokken de bağlantı kabul eder ve mesaj gönderimi (DB yolu) ça
 
 | İstemci → sunucu | Sunucu → istemci |
 |---|---|
-| `SEND {clientMsgId, conversationId, body, kind?, amountKurus?, payerId?}` | `SENT {clientMsgId, seq, serverTime, duplicate}` (✓) |
+| `SEND {clientMsgId, conversationId, body}` (sadece metin; para isteği HTTP ile ödeme servisine) | `SENT {clientMsgId, seq, serverTime, duplicate}` (✓) |
 | `ACK {conversationId, seq}` | `MSG {message}` |
 | `READ {conversationId, seq}` | `RECEIPT {conversationId, userId, seq, receipt: DELIVERED\|READ}` |
 | `SYNC {cursors: {sohbet: seq}}` | `SYNC_RESULT {conversations: [...]}` |
 | `HEADS` | `HEADS_RESULT {conversations: [{conversationId, lastSeq, readSeq}]}` |
 | `TYPING {conversationId}` | `TYPING {conversationId, userId}` |
 | `PRESENCE_QUERY {userIds}` | `PRESENCE {users}` |
-| `PAY {paymentRequestId}`, `DECLINE {...}` | `PAY_RESULT {status}` |
 | `PING` | `PONG`, `RECONNECT {afterMs}` (gateway kapanıyor), `RESYNC {afterMs}` (hızlı yol kesildi, senkronla), `ERROR {code, message, ref}` |
 
 ### Çalıştırma
 
 ```bash
-docker compose up --build        # PostgreSQL + Redis + Kafka + 2 gateway (8081, 8082) + worker
+docker compose up --build        # 2 PostgreSQL (chat, payreq) + Redis + Kafka + 2 gateway (8081, 8082) + worker + payment-request-service (8090)
 ```
 
-Kubernetes: `kubectl apply -k k8s/` (gateway ×25 + HPA + PDB, worker ×3, PostgreSQL, Redis, Kafka, Ingress, NetworkPolicy).
+Dockerfile'ların build context'i 007 klasörü (üst pom iki modülü birlikte bilir): `docker build -f payment-request-service/Dockerfile .`
+
+Kubernetes: `kubectl apply -k k8s/` (gateway ×25 + HPA + PDB, worker ×3, payment-request-service ×2 + PDB, iki PostgreSQL, Redis, Kafka, Ingress, NetworkPolicy). Ingress `/v1/payment-requests`'i ödeme servisine, gerisini gateway'lere yollar. Ödeme veritabanına sadece ödeme servisi erişebilir.
 
 ### Testler
 
 ```bash
-cd app
+# 007 klasöründe (iki modül birlikte)
 export IT_PG_URL=jdbc:postgresql://localhost:5432/chat IT_PG_USER=postgres IT_REDIS_HOST=localhost IT_REDIS_PORT=6379
 mvn verify      # Docker varsa env gerekmez (Testcontainers); Kafka her zaman gömülü
+                # ödeme servisi aynı sunucuda "payreq" veritabanını kullanır (yoksa testler oluşturur)
 ```
 
-Entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) ayağa kaldırır. İkisi aynı PostgreSQL, Redis ve Kafka'ya bağlıdır, yani gerçek bir mini cluster. Drain testi üçüncü bir gateway açıp kapatır.
+Sohbet entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) ayağa kaldırır. İkisi aynı PostgreSQL, Redis ve Kafka'ya bağlıdır, yani gerçek bir mini cluster. Drain testi üçüncü bir gateway açıp kapatır. Uçtan uca test gerçek `payment-request-service`'i de (kendi veritabanıyla, aynı Kafka'ya bağlı) aynı JVM'de başlatır.
 
 | Test | Kanıtladığı |
 |---|---|
 | `CrossGatewayDeliveryIT` | Ali gw-a'da, Ayşe gw-b'de: mesaj Pub/Sub ile geçer. ✓, ✓✓, okundu geri döner. Relay'lerden tam olarak biri lider. Yabancı ve hatalı çerçeveler hata alır, bağlantı kopmaz |
 | `IdempotencyAndOrderingIT` | Aynı mesaj iki gateway'den üç kez gönderilir: tek satır, hepsine aynı seq, sayaç boşa artmaz, Ayşe bir kez görür. İki kişi farklı gateway'lerden aynı anda 30'ar mesaj atar: seq 1–60 boşluksuz, iki farklı gateway'deki üyeler aynı sırayı görür |
 | `OfflineAndMultiDeviceIT` | Çevrimdışıya push, dönüşte imleçten senkron (yeni cihaz, kayıtlı cihaz imleci, istemci imleci). Ölü gateway'deki bayat kayıt yok sayılır. Bir cihazda okunan mesaj diğerinde de okundu olur |
-| `PaymentRequestIT` | İki cihazdan aynı anda "Öde": para bir kez. Cüzdan cevabı kaybolunca reconciler aynı anahtarla tamamlar, para bir kez. Bakiye yetersiz → tekrar dene. Süresi dolan ödenemez. Yetki ve geçersiz tutar |
-| `WalletEventsIT` | Test cüzdanın rolünü oynar. Sohbet dışından ödeme sohbete bir kez yansır (olay iki kez gelse de). Sonradan iade kartı "iade edildi" yapar. Cüzdan olayı senkron cevaptan **önce** gelir: olay yolu yazar, senkron yol mesajı tekrarlamaz, para bir kez gider. Tutarı uyuşmayan ve ilgisiz olaylar yok sayılır |
+| `PaymentRequestServiceIT` (ödeme modülü) | Oluşturma idempotent, tek `CREATED` olayı tam anlık görüntüyle. İki cihazdan aynı anda "Öde": para bir kez, sürüm 1 → 3. Cüzdan cevabı kaybolunca reconciler tamamlar, para bir kez. Bakiye yetersiz → istek serbest kalır, tekrar ödenir. Ret ve süre dolumu kalıcı. Cüzdan olayıyla dışarıdan ödeme ve iade (olaylar iki kez gelse de bir kez işlenir, sürümler artan). Cüzdan olayı senkron cevaptan önce gelir: tek `PAID` olayı. Tutarı uyuşmayan/ilgisiz olaylar yok sayılır. Yetki ve doğrulama |
+| `PaymentCardsIT` | Test ödeme servisinin rolünü oynar. Tekrar gelen olaylar tek kart + tek durum mesajı. **Sıra karışıklığı:** `PAID` (v3) `CREATED`'dan (v1) önce gelir, kart yine doğru ve tek. Üye olmayanın isteği, LINK kaynaklı ve bozuk referanslı olaylar sohbete düşmez. Soket artık para isteği kabul etmez |
+| `PaymentEndToEndIT` | İki gerçek servis: HTTP ile iste → kart iki tarafa düşer. İki cihazdan aynı anda HTTP ile öde → para bir kez, sohbete tek "✅ ödendi". Cüzdan cevabı kaybolur → reconciler kapatır, sohbet olaydan öğrenir. Ret sohbette görünür |
 | `BroadcastPresenceIT` | Kampanya kanalı iki gateway'deki abonelere ulaşır, push yok, abone yazamaz, geç gelen senkronla alır. "Yazıyor" iletilir ama saklanmaz. Presence: son görülme ve gizlilik |
 | `RedisOutageIT` | **A.** Redis 4 sn donduruluyor, mesaj bu sırada gönderiliyor: beklemeli tekrar deneme sayesinde canlı yoldan teslim edilir (tekrar deneme kapatılınca bu test başarısız oluyor, denendi). **B.** Redis kapatılıyor ve **boş** açılıyor: gönderme çalışır, çevrimdışına push gider, gateway sondası toparlanır, rehberi yeniden doldurur, RESYNC gönderir, istemci HEADS + SYNC ile kaçırdığını alır, sonraki mesaj yine canlı gelir |
 | `GatewayDrainIT` | Boşaltılan gateway 30 istemciye 0–2 sn'ye yayılmış RECONNECT gönderir, rehberden siler, yeni bağlantıya 503 döner |
 | `AdmissionLimiterTest` | 5.000 eşzamanlı el sıkışmadan sadece kova kadarı kabul edilir, Retry-After rastgele |
 
-**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): 2 birim + 22 entegrasyon testi geçti, art arda çalıştırmalarda da. `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
+**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): ödeme modülü 9 entegrasyon testi, sohbet 2 birim + 21 entegrasyon testi geçti (son tam koşu: `BUILD SUCCESS`). **Kırılganlık notu:** bu değişiklikten sonra sohbet testleri 13 kez çalıştırıldı; 9'u tamamen temiz. Kalan 4'ün hepsi zamanlamaya duyarlı, bu değişiklikte dokunulmayan testlerde: üçü `RedisOutageIT` / hemen ardından gelen test (Redis geri geldikten sonraki ilk mesaj 15–20 sn içinde canlı yoldan gelmedi), biri `AdmissionLimiterTest`. Önceki commit aynı makinede 7/7 temiz geçti; fark kesin olarak açıklanamadı. Olası sebep (doğrulanmadı): Redis yeniden bağlanırken fan-out'un yayını, gateway'in Pub/Sub aboneliği yenilenmeden yapılırsa mesaj canlı yoldan kaybolur ve sadece RESYNC → SYNC ile gelir; test istemcisi RESYNC'e cevap vermediği için bekler. `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
 
 **Testlerin yakaladığı gerçek hatalar:**
 - Spring Kafka'nın varsayılan hata işleyicisi kısa bir Redis kesintisinde olayları beklemeden atlıyordu (§5.10).
@@ -294,6 +352,8 @@ Entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) ayağa kald
 
 - `docker-compose.yml` ve `k8s/` bu ortamda çalıştırılmadı (Docker ve Kubernetes yok). Sadece YAML sözdizimi kontrol edildi.
 - Kimlik doğrulama demo amaçlı (sorgu parametresi ve `X-User-Id`). Üretimde JWT.
-- Cüzdan (006) ve push (004) arayüz olarak tanımlı. Testlerde sahte uygulamaları kullanılıyor. `wallet.events` topic'inin sahibi cüzdan servisi: sohbet servisi onu oluşturmaz, sadece dinler (testte gömülü Kafka'da önceden açılıyor).
+- Cüzdan (006) ve push (004) arayüz olarak tanımlı. Testlerde sahte uygulamaları kullanılıyor. `wallet.events` topic'inin sahibi cüzdan servisi: ödeme servisi onu oluşturmaz, sadece dinler (testte gömülü Kafka'da önceden açılıyor). `payment.events`'in sahibi ödeme servisi.
+- `V3__payment_cards.sql` eski `payment_requests` tablosunu taşımadan siliyor (demo). Üretimde: veriyi yeni servise kopyala (backfill), bir süre iki taraf birlikte çalışsın, sonra eskiyi sil (expand → migrate → contract).
+- Ödeme servisinin HTTP API'sinde kimlik demo amaçlı `X-User-Id`. Üretimde JWT; ayrıca istek oluşturma için hız limiti (spam para isteği).
 - Tek PostgreSQL, tek Redis. Shard'lama, aylık partition ve Pub/Sub için ayrı Redis tasarımda anlatıldı (§5.3, §5.11), kodda yok.
 - HPA'nın bağlantı sayısı metriği için Prometheus Adapter kurulumu gerekir.

@@ -1,4 +1,4 @@
-# Worker: outbox relay (advisory lock ile tek lider, diğerleri bekler), Kafka fan-out (consumer group), ödeme işleri.
+# Worker: outbox relay (advisory lock ile tek lider, diğerleri bekler), Kafka fan-out (consumer group), para isteği kart projeksiyonu (payment.events).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,7 +27,7 @@ spec:
             - { name: ROLE_GATEWAY, value: "false" }
             - { name: ROLE_RELAY, value: "true" }
             - { name: ROLE_FANOUT, value: "true" }
-            - { name: ROLE_PAYMENT, value: "true" }
+            - { name: ROLE_PAYMENT_CARDS, value: "true" }
             - name: GATEWAY_NAME
               valueFrom: { fieldRef: { fieldPath: metadata.name } }
             - name: DB_USER

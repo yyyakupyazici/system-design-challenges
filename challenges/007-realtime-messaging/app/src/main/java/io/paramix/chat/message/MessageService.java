@@ -1,6 +1,5 @@
 package io.paramix.chat.message;
 
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -14,7 +13,6 @@ import io.paramix.chat.message.ConversationRepository.Conversation;
 import io.paramix.chat.message.ConversationRepository.Membership;
 import io.paramix.chat.outbox.ChatEvent;
 import io.paramix.chat.outbox.OutboxWriter;
-import io.paramix.chat.payment.PaymentRepository;
 import io.paramix.chat.protocol.Frames;
 
 import io.micrometer.core.instrument.MeterRegistry;
@@ -37,10 +35,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @Service
 public class MessageService {
 
-    private static final java.util.Locale TR = java.util.Locale.forLanguageTag("tr-TR");
-
-    public record SendCommand(UUID clientMsgId, long conversationId, String kind, String body, Long amountKurus,
-                              Long payerId) {
+    public record SendCommand(UUID clientMsgId, long conversationId, String kind, String body) {
     }
 
     public record SendResult(MessageView message, boolean duplicate) {
@@ -50,20 +45,18 @@ public class MessageService {
     private final TransactionTemplate tx;
     private final ConversationRepository conversations;
     private final MessageRepository messages;
-    private final PaymentRepository payments;
     private final OutboxWriter outbox;
     private final ChatProperties props;
     private final Semaphore syncSlots;
     private final MeterRegistry meters;
 
     public MessageService(JdbcClient jdbc, TransactionTemplate tx, ConversationRepository conversations,
-                          MessageRepository messages, PaymentRepository payments, OutboxWriter outbox,
+                          MessageRepository messages, OutboxWriter outbox,
                           ChatProperties props, MeterRegistry meters) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.conversations = conversations;
         this.messages = messages;
-        this.payments = payments;
         this.outbox = outbox;
         this.props = props;
         this.meters = meters;
@@ -86,18 +79,13 @@ public class MessageService {
 
         MessageView saved = tx.execute(status -> {
             long seq = messages.nextSeq(conv.id());
-            Long prId = null;
-            if ("PAYMENT_REQUEST".equals(kind)) {
-                prId = payments.create(conv.id(), userId, cmd.payerId(), cmd.amountKurus(),
-                        Instant.now().plus(props.payment().requestTtl()));
-            }
-            if (!messages.insert(conv.id(), seq, userId, cmd.clientMsgId(), kind, cmd.body(), prId)) {
-                status.setRollbackOnly();          // tekrar gelen mesaj: sayaç artışı ve para isteği geri alınır
+            if (!messages.insert(conv.id(), seq, userId, cmd.clientMsgId(), kind, cmd.body(), null)) {
+                status.setRollbackOnly();          // tekrar gelen mesaj: sayaç artışı geri alınır
                 return null;
             }
             MessageView v = messages.bySeq(conv.id(), seq).orElseThrow();
             outbox.write(new ChatEvent(conv.id(), conv.kind(), userId, userId + ":" + deviceId,
-                    "BROADCAST".equals(conv.kind()) ? null : preview(kind, cmd), Frames.msg(v)));
+                    "BROADCAST".equals(conv.kind()) ? null : "Yeni mesaj", Frames.msg(v)));
             return v;
         });
         if (saved != null) {
@@ -117,26 +105,15 @@ public class MessageService {
         }
     }
 
+    /**
+     * Soketten sadece metin gelir. Para isteği kartı (PAYMENT_REQUEST) ve durum mesajları (SYSTEM) istemciden değil,
+     * payment-request-service'in olaylarından yazılır (bkz. paymentcard.PaymentCardsConsumer).
+     */
     private static void validate(Conversation conv, long userId, String kind, SendCommand cmd) {
-        switch (kind) {
-            case "TEXT" -> { }
-            case "PAYMENT_REQUEST" -> {
-                if ("BROADCAST".equals(conv.kind())) {
-                    throw new ChatException("BAD_REQUEST", "kampanya kanalında para isteği olmaz");
-                }
-                if (cmd.amountKurus() == null || cmd.amountKurus() <= 0 || cmd.payerId() == null || cmd.payerId() == userId) {
-                    throw new ChatException("BAD_REQUEST", "para isteği için pozitif tutar ve başka bir ödeyen gerekir");
-                }
-            }
-            default -> throw new ChatException("BAD_REQUEST", "bilinmeyen mesaj türü: " + kind);
+        if (!"TEXT".equals(kind)) {
+            throw new ChatException("BAD_REQUEST", "bilinmeyen mesaj türü: " + kind
+                    + ("PAYMENT_REQUEST".equals(kind) ? " (para isteği payment-request-service'e gönderilir)" : ""));
         }
-    }
-
-    /** Bildirim metni. Gizlilik: mesajın kendisi değil, kısa bir özet (kilit ekranında okunabilir). */
-    private static String preview(String kind, SendCommand cmd) {
-        return "PAYMENT_REQUEST".equals(kind)
-                ? String.format(TR, "%,.2f TL para isteği", cmd.amountKurus() / 100.0)
-                : "Yeni mesaj";
     }
 
     // ------------------------------------------------------------------ iletildi / okundu

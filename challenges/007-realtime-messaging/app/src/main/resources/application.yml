@@ -51,12 +51,12 @@ management:
         enabled: true
 
 chat:
-  # Kubernetes'te her Deployment kendi rolünü açar: gateway pod'ları sadece gateway, worker pod'ları relay + fanout + payment.
+  # Kubernetes'te her Deployment kendi rolünü açar: gateway pod'ları sadece gateway, worker pod'ları relay + fanout + kart projeksiyonu.
   roles:
     gateway: ${ROLE_GATEWAY:true}
     relay: ${ROLE_RELAY:true}
     fanout: ${ROLE_FANOUT:true}
-    payment: ${ROLE_PAYMENT:true}
+    payment-cards: ${ROLE_PAYMENT_CARDS:true}   # payment.events → sohbetteki para isteği kartları
   gateway:
     name: ${GATEWAY_NAME:${HOSTNAME:gw-local}}
     heartbeat: 5s                       # gateway canlılık kaydını bu aralıkla yeniler
@@ -81,10 +81,7 @@ chat:
     replicas: ${KAFKA_REPLICAS:1}
   members-cache-ttl: 30s
   retention:
-    messages: 365d                      # para isteği mesajları hariç (onlar payment_requests ile 5 yıl)
+    messages: 365d                      # para isteği kartlı mesajlar hariç
     cron: "0 15 3 * * *"
-  wallet:
-    events-topic: wallet.events          # 006'daki cüzdanın olay topic'i (sahibi cüzdan servisi)
-  payment:
-    request-ttl: 24h
-    reconcile-after: 10s                # PROCESSING'de bu kadar kalan istek, cüzdana aynı anahtarla tekrar sorulur
+  payment-cards:
+    topic: payment.events               # payment-request-service'in olayları (sahibi o servis)

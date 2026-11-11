@@ -1,0 +1,62 @@
+# payment-request-service: para isteğinin sahibi. Sohbetten bağımsız deploy edilir ve ölçeklenir:
+# sohbet gateway'leri yeniden başlarken (drain) "Öde" butonu çalışmaya devam eder.
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-request-service
+  namespace: chat
+spec:
+  selector: { app: payment-request-service }
+  ports: [{ port: 80, targetPort: 8080 }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-request-service
+  namespace: chat
+spec:
+  replicas: 2                                 # relay advisory lock ile tek lider; reconciler/expiry koşullu UPDATE ile güvenli
+  selector:
+    matchLabels: { app: payment-request-service }
+  template:
+    metadata:
+      labels: { app: payment-request-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /actuator/prometheus
+    spec:
+      containers:
+        - name: app
+          image: paramix/payment-request-service:0.1.0
+          imagePullPolicy: IfNotPresent
+          ports: [{ containerPort: 8080 }]
+          env:
+            - { name: DB_URL, value: "jdbc:postgresql://payreq-postgres:5432/payreq" }
+            - { name: KAFKA_BOOTSTRAP, value: "kafka:9092" }
+            - { name: KAFKA_PARTITIONS, value: "24" }
+            - { name: KAFKA_REPLICAS, value: "1" }          # prod: 3
+            - name: DB_USER
+              valueFrom: { secretKeyRef: { name: payreq-secrets, key: DB_USER } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: payreq-secrets, key: DB_PASSWORD } }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: 8080 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: 8080 }
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 500m, memory: 768Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: payment-request-service
+  namespace: chat
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: { app: payment-request-service }

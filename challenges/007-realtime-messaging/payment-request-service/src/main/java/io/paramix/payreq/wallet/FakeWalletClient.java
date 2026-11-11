@@ -1,4 +1,4 @@
-package io.paramix.chat.payment;
+package io.paramix.payreq.wallet;
 
 import java.util.Map;
 import java.util.Queue;

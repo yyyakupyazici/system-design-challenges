@@ -6,7 +6,6 @@ import io.paramix.chat.config.ChatProperties;
 import io.paramix.chat.fanout.EphemeralRelay;
 import io.paramix.chat.message.ConversationRepository;
 import io.paramix.chat.message.MessageService;
-import io.paramix.chat.payment.PaymentRequestService;
 import io.paramix.chat.presence.PresenceService;
 import io.paramix.chat.protocol.Json;
 
@@ -45,10 +44,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final MeterRegistry meters;
 
     public WebSocketConfig(LocalSessions sessions, RoutingTable routing, GatewayIdentity identity,
-                           ConversationRepository conversations, MessageService messages, PaymentRequestService payments,
+                           ConversationRepository conversations, MessageService messages,
                            PresenceService presence, EphemeralRelay ephemeral, ChatProperties props, Json json,
                            MeterRegistry meters, GatewayDrainer drainer) {
-        this.handler = new ChatWebSocketHandler(sessions, routing, identity, conversations, messages, payments, presence,
+        this.handler = new ChatWebSocketHandler(sessions, routing, identity, conversations, messages, presence,
                 ephemeral, props, json, meters);
         this.sessions = sessions;
         this.drainer = drainer;

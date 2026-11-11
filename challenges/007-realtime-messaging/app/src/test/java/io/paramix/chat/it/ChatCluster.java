@@ -4,6 +4,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import io.paramix.chat.ChatApplication;
+import io.paramix.payreq.PaymentRequestApplication;
 
 import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.context.ConfigurableApplicationContext;
@@ -13,8 +14,9 @@ import org.springframework.kafka.test.EmbeddedKafkaKraftBroker;
  * Gerçek bir mini cluster: iki ayrı Spring uygulaması = iki gateway makinesi, aynı PostgreSQL, Redis ve Kafka'ya bağlı.
  *
  * <pre>
- *  node A (gw-a): gateway + relay + fan-out + ödeme işleri   ("her şey" pod'u)
- *  node B (gw-b): gateway + relay                             (relay'ler advisory lock ile tek lider seçer)
+ *  node A (gw-a): gateway + relay + fan-out + kart projeksiyonu   ("her şey" pod'u)
+ *  node B (gw-b): gateway + relay                                  (relay'ler advisory lock ile tek lider seçer)
+ *  payments    : payment-request-service (kendi veritabanı "payreq", aynı Kafka)
  * </pre>
  *
  * Bütün IT sınıfları aynı cluster'ı paylaşır (JVM başına bir kez başlar). Testler birbirini bozmasın diye her test
@@ -27,13 +29,17 @@ public final class ChatCluster {
     public final EmbeddedKafkaKraftBroker kafka;
     public final ConfigurableApplicationContext nodeA;
     public final ConfigurableApplicationContext nodeB;
+    private ConfigurableApplicationContext payments;
 
     private ChatCluster() {
-        kafka = new EmbeddedKafkaKraftBroker(1, 4, "chat.events", "wallet.events");
+        kafka = new EmbeddedKafkaKraftBroker(1, 4, "chat.events", "payment.events", "wallet.events");
         kafka.afterPropertiesSet();
         nodeA = start("gw-a", true);
         nodeB = start("gw-b", false);
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (payments != null) {
+                payments.close();
+            }
             nodeB.close();
             nodeA.close();
             kafka.destroy();
@@ -45,6 +51,25 @@ public final class ChatCluster {
             instance = new ChatCluster();
         }
         return instance;
+    }
+
+    /**
+     * payment-request-service sadece uçtan uca testte gerekiyor: ilk istenince başlar. Diğer testler (özellikle
+     * zamanlamaya duyarlı Redis kesintisi testleri) aynı JVM'de fazladan bir uygulamayla yarışmasın.
+     */
+    public synchronized ConfigurableApplicationContext payments() {
+        if (payments == null) {
+            payments = PaymentRequestApplication.run(
+                    "--server.port=0",
+                    "--spring.datasource.url=" + TestInfra.payreqPgUrl(),
+                    "--spring.datasource.username=" + TestInfra.pgUser(),
+                    "--spring.datasource.password=" + TestInfra.pgPassword(),
+                    "--spring.kafka.bootstrap-servers=" + kafka.getBrokersAsString(),
+                    "--payreq.topics.partitions=4",
+                    "--payreq.reconcile-after=1s",
+                    "--payreq.reconcile-every=300ms");
+        }
+        return payments;
     }
 
     public ConfigurableApplicationContext start(String gatewayName, boolean workerRoles) {
@@ -71,10 +96,8 @@ public final class ChatCluster {
         p.put("chat.gateway.probe-timeout", "2s");
         p.put("chat.gateway.resync-spread", "1s");
         p.put("chat.members-cache-ttl", "1s");
-        p.put("chat.payment.reconcile-after", "1s");
-        p.put("chat.payment.reconcile-every", "300ms");
         p.put("chat.roles.fanout", String.valueOf(workerRoles));
-        p.put("chat.roles.payment", String.valueOf(workerRoles));
+        p.put("chat.roles.payment-cards", String.valueOf(workerRoles));
         p.put("spring.lifecycle.timeout-per-shutdown-phase", "5s");
         return p;
     }

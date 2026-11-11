@@ -1,20 +1,22 @@
 stateDiagram-v2
-    [*] --> PENDING: SEND kind=PAYMENT_REQUEST (mesajla aynı tx)
-    PENDING --> PROCESSING: PAY · koşullu UPDATE (sadece biri kapar)
+    [*] --> PENDING: POST /v1/payment-requests (Idempotency-Key) · CREATED olayı
+    PENDING --> PROCESSING: POST /{id}/pay · koşullu UPDATE (sadece biri kapar)
     PROCESSING --> PAID: HIZLI YOL · cüzdanın senkron cevabı OK
     PROCESSING --> PAID: OLAY YOLU · wallet.events TRANSFER_COMPLETED
     PROCESSING --> PAID: GÜVENLİK AĞI · reconciler aynı anahtarla tekrar sordu
     PROCESSING --> PENDING: cüzdan reddetti (bakiye yetersiz) → tekrar denenebilir
     PENDING --> PAID: OLAY YOLU · sohbet dışından ödendi (cüzdan ekranı, destek)
     EXPIRED --> PAID: OLAY YOLU · süre dolduktan sonra ödendi (para gittiyse sohbet bunu gösterir)
-    PENDING --> DECLINED: DECLINE
+    PENDING --> DECLINED: POST /{id}/decline
     PENDING --> EXPIRED: süre doldu (job)
     PAID --> REVERSED: OLAY YOLU · TRANSFER_REVERSED (chargeback, fraud iptali)
     note right of PAID
-        Her geçiş = koşullu UPDATE + aynı tx'te
-        deterministik id'li sistem mesajı.
+        payment-request-service içinde.
+        Her geçiş = koşullu UPDATE (version + 1)
+        + aynı tx'te payment.events olayı (outbox).
         Hangi yol önce gelirse o yazar,
-        diğerleri etkisiz kalır.
+        diğerleri etkisiz kalır. Sohbet kartı
+        bu olaylardan kurar.
     end note
     REVERSED --> [*]
     DECLINED --> [*]
