@@ -170,7 +170,27 @@ Sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`): ayn
 - Uzun zaman aşımları (1 saat), tamponlama kapalı. İstemci 30 sn'de bir `PING` gönderir (ara cihazlar boşta bağlantıyı kesmesin).
 - **HPA sinyali pod başına bağlantı sayısı** (`chat_gateway_connections`, hedef 40.000), CPU değil. Küçülme yavaş, çünkü küçülmek bağlantı koparmak demek.
 
-### 5.10 Darboğazlar ve trade-off'lar
+### 5.10 Redis çökerse: "DB'ye yazıldı ama publish edilemedi"
+
+Mesaj o anda iki yerde güvende: **veritabanında** ve **Kafka'da** (olay işlenmedi, offset commit edilmedi). Kayıp riski yok. Soru, kullanıcının ne zaman göreceği. İlk sürümde iki boşluk vardı:
+
+- Spring Kafka'nın varsayılan hata işleyicisi 10 kez **beklemeden** dener ve olayı atlar. 1 sn'lik bir Redis kesintisi bile canlı teslimi kaybettiriyordu.
+- Push, Redis işlemlerinden sonra yapıldığı için Redis çökünce push da duruyordu.
+
+Dört katmanlı çözüm:
+
+| Katman | Ne yapar | Hangi durumu kapatır |
+|---|---|---|
+| **Beklemeli tekrar deneme** (`KafkaConfig`) | 100 ms'den başlayıp ikiye katlanarak (en fazla 5 sn arayla) 30 sn boyunca tekrar dener | Kısa kesinti (failover ~10 sn): olay atlanmaz, canlı yoldan teslim edilir |
+| **Push ayrı consumer group'ta** (`PushWorker`, `chat-push`) | Canlı teslimden bağımsız. Rehbere ulaşılamazsa **şüphede herkese** (gönderen hariç) bildirir | Redis çökünce çevrimdışı kullanıcılar bildirimsiz kalmaz |
+| **Pub/Sub sondası + RESYNC** (`PubSubHealth`) | Gateway saniyede bir kendi kanalına sonda yayınlar. 3 sn dönmezse yolu bozuk sayar. Tekrar dönünce: ① bütün bağlantılarını rehbere **yeniden yazar** (Redis verisini kaybetmiş olabilir) ② istemcilere 0–10 sn'ye yayılmış `RESYNC` gönderir | Uzun kesinti ve **veri kaybıyla yeniden başlama**: açık bağlantısı olan kullanıcı kaçırdığını saniyeler içinde görür. Sonda, Redis'in yavaş aboneyi sessizce koparmasını (`client-output-buffer-limit`) da yakalar |
+| **HEADS** (istemci) | Mesaj içeriği olmadan her sohbetin son seq'i. İstemci ön plana gelince, RESYNC alınca ve açıkken dakikada bir çağırır, sadece geride kaldığı sohbetleri SYNC eder | Diğer her şey atlansa bile gecikmenin üst sınırı ~1 dk |
+
+Gateway, Redis yokken de bağlantı kabul eder ve mesaj gönderimi (DB yolu) çalışmaya devam eder. Rehber kaydı Redis gelince sondanın tetiklediği toparlanmada yazılır.
+
+**Ders:** "Kayıp yok" ile "kullanıcı zamanında görüyor" aynı şey değil. İlkini kalıcı yol garanti eder. İkincisi için her bağımlılığın çökme senaryosunda **hangi başka işin de durduğunu** ve **kullanıcının kaçırdığını nasıl fark ettiğini** tek tek düşünmek gerekir.
+
+### 5.11 Darboğazlar ve trade-off'lar
 
 | Karar | Kazanılan | Verilen |
 |---|---|---|
@@ -183,7 +203,7 @@ Sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`): ayn
 **En çok korkutan üç nokta:**
 - **Bölge çapında kesinti** sonrası 1,2 milyon geri bağlanma (admission limit ve jitter yumuşatır, ama kapasite planı şart).
 - **Çok aktif tek bir grup** (sohbet satırı kilidinin tavanı).
-- **Pub/Sub Redis'inin tek noktası.** Çökerse hızlı yol durur, her şey senkron yoluna düşer: kayıp yok ama gecikme artar ve senkron yükü sıçrar.
+- **Pub/Sub Redis'inin tek noktası.** Çökerse hızlı yol durur. Kayıp yok, push sürer, Redis gelince RESYNC ile herkes toparlanır (§5.10), ama RESYNC dalgası senkron yükünü sıçratır (bu yüzden 10 sn'ye yayılıyor ve senkron bulkhead'li).
 
 ## 6. Kod
 
@@ -191,13 +211,13 @@ Sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`): ayn
 
 | Paket | İçerik |
 |---|---|
-| `gateway` | `ChatWebSocketHandler`, `WebSocketConfig` (el sıkışmada kabul kontrolü), `LocalSessions`, `RoutingTable`, `LiveGateways`, `GatewayInbox` (cihaz şeritleri), `GatewayDrainer`, `AdmissionLimiter` |
+| `gateway` | `ChatWebSocketHandler`, `WebSocketConfig` (el sıkışmada kabul kontrolü), `LocalSessions`, `RoutingTable`, `LiveGateways`, `GatewayInbox` (cihaz şeritleri), `PubSubHealth` (sonda + RESYNC), `GatewayDrainer`, `AdmissionLimiter` |
 | `message` | `MessageService` (gönder, ACK, READ, senkron, geçmiş), repository'ler |
 | `outbox` | `OutboxWriter`, `OutboxRelay` (advisory lock lideri), `RetentionJob` |
 | `fanout` | `FanoutWorker` (Kafka), `DeliveryRouter`, `DeliveryPublisher`, `EphemeralRelay` (yazıyor) |
 | `presence` | `PresenceService` |
 | `payment` | `PaymentRequestService`, `PaymentJobs` (reconciler, süre dolumu), `SystemMessages`, `WalletClient` (+ test için `FakeWalletClient`) |
-| `push` | `PushSender` (üretimde 004'ün bildirim platformu) |
+| `push` | `PushWorker` (ayrı consumer group), `PushSender` (üretimde 004'ün bildirim platformu) |
 | `api` | REST: geçmiş, presence, demo kullanıcı/sohbet oluşturma |
 
 ### WebSocket protokolü
@@ -210,10 +230,11 @@ Sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`): ayn
 | `ACK {conversationId, seq}` | `MSG {message}` |
 | `READ {conversationId, seq}` | `RECEIPT {conversationId, userId, seq, receipt: DELIVERED\|READ}` |
 | `SYNC {cursors: {sohbet: seq}}` | `SYNC_RESULT {conversations: [...]}` |
+| `HEADS` | `HEADS_RESULT {conversations: [{conversationId, lastSeq, readSeq}]}` |
 | `TYPING {conversationId}` | `TYPING {conversationId, userId}` |
 | `PRESENCE_QUERY {userIds}` | `PRESENCE {users}` |
 | `PAY {paymentRequestId}`, `DECLINE {...}` | `PAY_RESULT {status}` |
-| `PING` | `PONG`, `RECONNECT {afterMs}`, `ERROR {code, message, ref}` |
+| `PING` | `PONG`, `RECONNECT {afterMs}` (gateway kapanıyor), `RESYNC {afterMs}` (hızlı yol kesildi, senkronla), `ERROR {code, message, ref}` |
 
 ### Çalıştırma
 
@@ -240,17 +261,20 @@ Entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) ayağa kald
 | `OfflineAndMultiDeviceIT` | Çevrimdışıya push, dönüşte imleçten senkron (yeni cihaz, kayıtlı cihaz imleci, istemci imleci). Ölü gateway'deki bayat kayıt yok sayılır. Bir cihazda okunan mesaj diğerinde de okundu olur |
 | `PaymentRequestIT` | İki cihazdan aynı anda "Öde": para bir kez. Cüzdan cevabı kaybolunca reconciler aynı anahtarla tamamlar, para bir kez. Bakiye yetersiz → tekrar dene. Süresi dolan ödenemez. Yetki ve geçersiz tutar |
 | `BroadcastPresenceIT` | Kampanya kanalı iki gateway'deki abonelere ulaşır, push yok, abone yazamaz, geç gelen senkronla alır. "Yazıyor" iletilir ama saklanmaz. Presence: son görülme ve gizlilik |
+| `RedisOutageIT` | **A.** Redis 4 sn donduruluyor, mesaj bu sırada gönderiliyor: beklemeli tekrar deneme sayesinde canlı yoldan teslim edilir (tekrar deneme kapatılınca bu test başarısız oluyor, denendi). **B.** Redis kapatılıyor ve **boş** açılıyor: gönderme çalışır, çevrimdışına push gider, gateway sondası toparlanır, rehberi yeniden doldurur, RESYNC gönderir, istemci HEADS + SYNC ile kaçırdığını alır, sonraki mesaj yine canlı gelir |
 | `GatewayDrainIT` | Boşaltılan gateway 30 istemciye 0–2 sn'ye yayılmış RECONNECT gönderir, rehberden siler, yeni bağlantıya 503 döner |
 | `AdmissionLimiterTest` | 5.000 eşzamanlı el sıkışmadan sadece kova kadarı kabul edilir, Retry-After rastgele |
 
-**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): 2 birim + 16 entegrasyon testi geçti, üç ardışık çalıştırmada da.
+**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): 2 birim + 18 entegrasyon testi geçti, art arda çalıştırmalarda da. `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
 
-**Testlerin yakaladığı gerçek hata:** Spring'in Redis dinleyicisi her Pub/Sub mesajını ayrı bir thread'de işliyordu ve gw-b'deki üye grup mesajlarını farklı sırada gördü. Cihaz şeritleriyle düzeltildi (§5.1).
+**Testlerin yakaladığı gerçek hatalar:**
+- Spring Kafka'nın varsayılan hata işleyicisi kısa bir Redis kesintisinde olayları beklemeden atlıyordu (§5.10).
+- Spring'in Redis dinleyicisi her Pub/Sub mesajını ayrı bir thread'de işliyordu ve gw-b'deki üye grup mesajlarını farklı sırada gördü. Cihaz şeritleriyle düzeltildi (§5.1).
 
 ## 7. Dürüst notlar
 
 - `docker-compose.yml` ve `k8s/` bu ortamda çalıştırılmadı (Docker ve Kubernetes yok). Sadece YAML sözdizimi kontrol edildi.
 - Kimlik doğrulama demo amaçlı (sorgu parametresi ve `X-User-Id`). Üretimde JWT.
 - Cüzdan (006) ve push (004) arayüz olarak tanımlı. Testlerde sahte uygulamaları kullanılıyor.
-- Tek PostgreSQL, tek Redis. Shard'lama, aylık partition ve Pub/Sub için ayrı Redis tasarımda anlatıldı (§5.3, §5.10), kodda yok.
+- Tek PostgreSQL, tek Redis. Shard'lama, aylık partition ve Pub/Sub için ayrı Redis tasarımda anlatıldı (§5.3, §5.11), kodda yok.
 - HPA'nın bağlantı sayısı metriği için Prometheus Adapter kurulumu gerekir.

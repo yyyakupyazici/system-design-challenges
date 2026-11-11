@@ -235,6 +235,21 @@ public class MessageService {
         }
     }
 
+    /**
+     * Hafif kontrol: mesaj içeriği yok, sadece her sohbetin son seq'i ve kullanıcının okuma imleci. İstemci uygulama
+     * ön plana gelince, RESYNC alınca ve açıkken dakikada bir çağırır; sadece kendisindeki seq'ten ileride olan
+     * sohbetler için SYNC ister. Diğer bütün önlemler bir şekilde atlansa bile gecikmenin üst sınırı bu aralıktır.
+     */
+    public List<Map<String, Object>> heads(long userId) {
+        return jdbc.sql("""
+                        SELECT c.id, c.last_seq, m.read_seq FROM conversations c
+                        JOIN conversation_members m ON m.conversation_id = c.id WHERE m.user_id = ?""")
+                .param(userId)
+                .query((rs, n) -> Frames.of("HEAD", "conversationId", rs.getLong(1), "lastSeq", rs.getLong(2),
+                        "readSeq", rs.getLong(3)))
+                .list();
+    }
+
     public List<MessageView> history(long userId, long conversationId, long beforeSeq, int limit) {
         memberConversation(conversationId, userId);
         return messages.before(conversationId, beforeSeq, Math.min(Math.max(limit, 1), 100));

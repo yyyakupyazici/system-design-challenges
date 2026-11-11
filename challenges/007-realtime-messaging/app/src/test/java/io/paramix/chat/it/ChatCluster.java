@@ -68,6 +68,8 @@ public final class ChatCluster {
         p.put("chat.gateway.heartbeat", "1s");
         p.put("chat.gateway.lease", "3s");
         p.put("chat.gateway.drain-spread", "2s");
+        p.put("chat.gateway.probe-timeout", "2s");
+        p.put("chat.gateway.resync-spread", "1s");
         p.put("chat.members-cache-ttl", "1s");
         p.put("chat.payment.reconcile-after", "1s");
         p.put("chat.payment.reconcile-every", "300ms");

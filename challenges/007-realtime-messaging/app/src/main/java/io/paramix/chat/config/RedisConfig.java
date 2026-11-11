@@ -15,6 +15,8 @@ public class RedisConfig {
         // Varsayılan: her Pub/Sub mesajı AYRI bir thread'de işlenir → aynı cihaza giden iki mesaj yarışır, sıra bozulur
         // (testte yakalandı). Mesajlar geldiği sırayla alınır; sıralı paralellik GatewayInbox'taki cihaz şeritlerinde.
         c.setTaskExecutor(new org.springframework.core.task.SyncTaskExecutor());
+        // Bağlantı koparsa aboneliği 1 sn aralıklarla yeniden kurmayı dene (varsayılan 5 sn)
+        c.setRecoveryInterval(1000);
         return c;
     }
 }

@@ -48,7 +48,11 @@ public class LiveGateways {
     @Scheduled(fixedDelayString = "${chat.gateway.heartbeat:5s}")
     public void heartbeat() {
         if (isGateway) {
-            redis.opsForZSet().add(KEY, identity.instanceId(), System.currentTimeMillis());
+            try {
+                redis.opsForZSet().add(KEY, identity.instanceId(), System.currentTimeMillis());
+            } catch (RuntimeException e) {
+                log.debug("Gateway lease yenilenemedi (Redis yok?): {}", e.getMessage());
+            }
         }
     }
 

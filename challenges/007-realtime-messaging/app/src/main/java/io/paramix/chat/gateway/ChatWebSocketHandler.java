@@ -84,7 +84,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
         if (old != null && old.socket().isOpen()) {
             old.socket().close(CloseStatus.POLICY_VIOLATION.withReason("aynı cihaz yeniden bağlandı"));
         }
-        routing.register(userId, deviceId, identity.instanceId());
+        try {
+            routing.register(userId, deviceId, identity.instanceId());
+        } catch (RuntimeException e) {
+            // Redis yok: bağlantıyı yine kabul et. Mesaj gönderme (DB) çalışır; Redis gelince PubSubHealth rehbere yazar.
+            log.warn("{}:{} rehbere yazılamadı, Redis gelince yazılacak: {}", userId, deviceId, e.getMessage());
+        }
         meters.gauge("chat.gateway.connections", sessions, LocalSessions::size);
         send(socket, Frames.of("HELLO", "gateway", identity.instanceId()));
     }
@@ -93,8 +98,12 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionClosed(WebSocketSession raw, CloseStatus status) {
         LocalSessions.Session s = (LocalSessions.Session) raw.getAttributes().get(ATTR_SESSION);
         if (s != null && sessions.remove(s)) {
-            routing.unregister(s.userId(), s.deviceId(), identity.instanceId());
-            presence.markLastSeen(s.userId());
+            try {
+                routing.unregister(s.userId(), s.deviceId(), identity.instanceId());
+                presence.markLastSeen(s.userId());
+            } catch (RuntimeException e) {
+                log.debug("{} rehberden silinemedi (bayat kayıt lease ile geçersizleşir): {}", s.key(), e.getMessage());
+            }
         }
     }
 
@@ -148,6 +157,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                 f.path("cursors").properties().forEach(e -> cursors.put(Long.parseLong(e.getKey()), e.getValue().asLong()));
                 yield Frames.syncResult(messages.sync(user, device, cursors));
             }
+            case "HEADS" -> Frames.of("HEADS_RESULT", "conversations", messages.heads(user));
             case "TYPING" -> {
                 ephemeral.typing(user, device, f.path("conversationId").asLong());
                 yield null;

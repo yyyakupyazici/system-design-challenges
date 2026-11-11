@@ -66,6 +66,11 @@ chat:
     drain-spread: ${DRAIN_SPREAD:20s}   # kapanırken istemcilerin geri bağlanmasını bu süreye yay
     send-time-limit: 5s                 # yavaş istemci: sokete yazma bu süreyi aşarsa bağlantı kapatılır
     send-buffer-limit: 524288
+    probe-interval: 1s                  # gateway kendi Pub/Sub kanalına bu aralıkla sonda yayınlar
+    probe-timeout: 3s                   # bu süre sonda dönmezse Pub/Sub yolu bozuk sayılır
+    resync-spread: 10s                  # yol düzelince istemcilere RESYNC bu süreye yayılarak gider
+  retry:
+    max-elapsed: 30s                    # Kafka tüketicisi hata alırsa beklemeli olarak bu süre boyunca dener
   sync:
     page-size: 200
     max-concurrent: ${SYNC_MAX_CONCURRENT:32}   # aynı anda en fazla bu kadar senkron sorgusu (bulkhead)

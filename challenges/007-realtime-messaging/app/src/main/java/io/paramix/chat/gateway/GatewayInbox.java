@@ -38,13 +38,15 @@ public class GatewayInbox implements MessageListener {
     private static final int LANES = 16;
 
     private final LocalSessions sessions;
+    private final PubSubHealth health;
     private final Json json;
     private final MeterRegistry meters;
     private final ExecutorService[] lanes = new ExecutorService[LANES];
 
     public GatewayInbox(RedisMessageListenerContainer container, GatewayIdentity identity, LocalSessions sessions,
-                        Json json, MeterRegistry meters) {
+                        PubSubHealth health, Json json, MeterRegistry meters) {
         this.sessions = sessions;
+        this.health = health;
         this.json = json;
         this.meters = meters;
         for (int i = 0; i < LANES; i++) {
@@ -57,6 +59,10 @@ public class GatewayInbox implements MessageListener {
     @Override
     public void onMessage(Message message, byte[] pattern) {
         JsonNode n = json.read(new String(message.getBody()));
+        if (n.has("probe")) {
+            health.probeReceived();                    // kendi sondamız: hızlı yol uçtan uca çalışıyor
+            return;
+        }
         String frame = n.get("frame").toString();
         if (n.has("channelId")) {
             for (String target : sessions.broadcastSubscribers(n.get("channelId").asLong())) {
