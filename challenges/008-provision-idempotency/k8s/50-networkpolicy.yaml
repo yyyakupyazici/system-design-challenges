@@ -1,0 +1,16 @@
+# /v1/** API gateway'den gelir (JWT doğrulanmış, X-Customer-Id gateway tarafından yazılır).
+# /internal/** (yatırım bildirimi, mutabakat) sadece ödeme entegrasyonu namespace'inden.
+# Yol bazlı ayrım gateway/ingress kuralıyla yapılır; bu politika kimin bu pod'lara hiç ulaşabileceğini sınırlar.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: provision-service-ingress
+spec:
+  podSelector: { matchLabels: { app: provision-service } }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: api-gateway } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: payment-integrations } }
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: monitoring } }
+      ports: [{ port: 8080 }]

@@ -1,0 +1,32 @@
+# Lokal: PostgreSQL + iki provizyon servisi (aynı veritabanı; idempotency pod'lar arası da çalışır).
+#   docker compose up --build
+#   http://localhost:8081  (provision-1)
+#   http://localhost:8082  (provision-2)
+# Örnek istekler için README §9.
+x-app: &app
+  build: { context: app }
+  depends_on:
+    postgres: { condition: service_healthy }
+  environment:
+    DB_URL: jdbc:postgresql://postgres:5432/provision
+    DB_USER: provision
+    DB_PASSWORD: provision
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: { POSTGRES_DB: provision, POSTGRES_USER: provision, POSTGRES_PASSWORD: provision }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U provision"], interval: 3s, retries: 20 }
+    ports: ["5432:5432"]
+  provision-1:
+    <<: *app
+    ports: ["8081:8080"]
+  provision-2:
+    <<: *app
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/provision
+      DB_USER: provision
+      DB_PASSWORD: provision
+      # Demo zinciri (FakeChainGateway) pod belleğinde; gerçek zincir paylaşımlıdır. Demoda çekim worker'ı tek pod'da.
+      PROVISION_WITHDRAWALS_WORKER_ENABLED: "false"
+    ports: ["8082:8080"]

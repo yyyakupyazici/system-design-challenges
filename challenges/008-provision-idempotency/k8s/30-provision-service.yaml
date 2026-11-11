@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: provision-service
+  labels: { app: provision-service }
+spec:
+  replicas: 6
+  strategy:
+    type: RollingUpdate
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 2 }
+  selector:
+    matchLabels: { app: provision-service }
+  template:
+    metadata:
+      labels: { app: provision-service }
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: /actuator/prometheus
+        prometheus.io/port: "8080"
+    spec:
+      # Pod'lar durumsuz: idempotency, kira (lease) ve liderlik PostgreSQL'de. Herhangi bir pod herhangi bir
+      # isteği alabilir; aynı key'in iki kopyası iki farklı pod'a düşse de veritabanı tek birini işletir.
+      terminationGracePeriodSeconds: 40
+      securityContext: { runAsNonRoot: true, runAsUser: 10001, fsGroup: 10001 }
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector: { matchLabels: { app: provision-service } }
+      containers:
+        - name: app
+          image: ghcr.io/paramix/provision-service:0.1.0
+          ports: [{ name: http, containerPort: 8080 }]
+          envFrom:
+            - configMapRef: { name: provision-config }
+            - secretRef: { name: provision-db }
+          resources:
+            requests: { cpu: 500m, memory: 768Mi }
+            limits: { memory: 768Mi }
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          lifecycle:
+            preStop:
+              exec: { command: ["sh", "-c", "sleep 5"] }   # endpoint listesinden düşmeyi bekle, sonra graceful shutdown
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          volumeMounts: [{ name: tmp, mountPath: /tmp }]
+      volumes: [{ name: tmp, emptyDir: {} }]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: provision-service
+spec:
+  selector: { app: provision-service }
+  ports: [{ name: http, port: 80, targetPort: http }]
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: provision-service
+spec:
+  minAvailable: 4
+  selector:
+    matchLabels: { app: provision-service }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: provision-service
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: provision-service }
+  minReplicas: 6
+  maxReplicas: 12   # üst sınırı CPU değil, PostgreSQL bağlantı bütçesi belirler (12 × 20 = 240)
+  metrics:
+    - type: Resource
+      resource: { name: cpu, target: { type: Utilization, averageUtilization: 65 } }

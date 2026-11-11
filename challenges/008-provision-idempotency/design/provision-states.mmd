@@ -1,0 +1,14 @@
+stateDiagram-v2
+    [*] --> HELD: POST /v1/provisions · available → held<br/>UNIQUE (müşteri, işlem tipi, işlem ref)
+    HELD --> CAPTURED: capture(tutar ≤ provizyon) · kalan → available
+    HELD --> RELEASED: release · held → available
+    HELD --> EXPIRED: süre doldu (süpürücü, SKIP LOCKED)
+    note right of HELD
+        Her geçiş: UPDATE … WHERE status = 'HELD' RETURNING
+        Aynı tx'te: bakiye + ledger journal + outbox olayı.
+        WITHDRAWAL provizyonu süresizdir (DB CHECK)
+        ve sadece çekim worker'ı kapatır.
+    end note
+    CAPTURED --> [*]
+    RELEASED --> [*]
+    EXPIRED --> [*]

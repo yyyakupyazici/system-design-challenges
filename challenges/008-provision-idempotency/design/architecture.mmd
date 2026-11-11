@@ -1,0 +1,44 @@
+flowchart LR
+    subgraph Clients
+        M[Mobil / Web<br/>Idempotency-Key: UUIDv7]
+        T[Emir motoru<br/>capture / release]
+        I[Banka & zincir<br/>entegrasyonları]
+    end
+
+    GW[API Gateway<br/>JWT → X-Customer-Id]
+
+    subgraph PS[provision-service ×N pod, durumsuz]
+        API[REST API]
+        IE[IdempotentExecutor<br/>tek tx: KAP → İŞ (savepoint) → SONUÇ]
+        PSV[ProvisionService<br/>durum makinesi]
+        WW[WithdrawalWorker<br/>lease + fencing]
+        SW[ExpirySweeper<br/>SKIP LOCKED]
+        OR[OutboxRelay<br/>advisory xact lock]
+        RC[Reconciliation]
+    end
+
+    subgraph PG[(PostgreSQL — gerçeğin kaynağı)]
+        IK[idempotency_keys<br/>günlük partition]
+        PR[provisions]
+        BA[balances]
+        LE[ledger_entries<br/>append-only]
+        WD[withdrawals]
+        OB[outbox]
+    end
+
+    CH[(Zincir / Banka)]
+    K[[Kafka<br/>provision.events]]
+
+    M --> GW --> API
+    T --> GW
+    I -->|/internal/deposits<br/>doğal anahtar| API
+    API --> IE --> PSV
+    PSV --> PR & BA & LE & OB
+    IE --> IK
+    WW --> WD
+    WW -->|sign / broadcast / status| CH
+    WW --> PSV
+    SW --> PSV
+    OR --> OB
+    OR -->|en az bir kez| K
+    RC -.denetler.-> BA & PR & LE

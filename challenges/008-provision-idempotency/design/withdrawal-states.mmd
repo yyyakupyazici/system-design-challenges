@@ -1,0 +1,17 @@
+stateDiagram-v2
+    [*] --> PENDING: POST /v1/withdrawals (Idempotency-Key)<br/>tek tx: provizyon + çekim + olay · 202
+    PENDING --> SIGNED: ① imzala · tx_hash + imzalı baytlar YAYINDAN ÖNCE yazılır
+    SIGNED --> BROADCAST: ② zincire sor (hash) · yoksa yayınla · aynı baytlar
+    BROADCAST --> BROADCAST: ③ onay bekleniyor · kirayı bırak, sonra tekrar sor
+    BROADCAST --> CONFIRMED: zincir onayladı · tek tx: CONFIRMED + capture
+    BROADCAST --> FAILED: zincir kesin reddetti · tek tx: FAILED + release
+    PENDING --> MANUAL_REVIEW: üst üste hata
+    SIGNED --> MANUAL_REVIEW: üst üste hata
+    BROADCAST --> MANUAL_REVIEW: üst üste hata · provizyon BLOKE kalır
+    note left of SIGNED
+        Her adım: claim_token = :benim (fencing)
+        Kira dolarsa başka worker devralır;
+        eski worker'ın yazmaları 0 satır günceller.
+    end note
+    CONFIRMED --> [*]
+    FAILED --> [*]

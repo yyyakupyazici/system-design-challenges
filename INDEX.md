@@ -6,6 +6,7 @@
 | 004 | 2026-10-29 | Çok kanallı bildirim platformu (öncelikli topic'ler, router, öncelikli sağlayıcı kotası, idempotent teslimat) | Klasik | ⭐⭐⭐⭐ Orta-İleri | [challenges/004-multi-channel-notification-platform](challenges/004-multi-channel-notification-platform/) |
 | 005 | 2026-11-05 | Kurumsal LLM Gateway (bütçe rezervasyonu, prompt caching, exact + semantic cache, PII maskeleme, gizli veri → kendi GPU) | AI | ⭐⭐⭐⭐ Orta-İleri | [challenges/005-llm-gateway](challenges/005-llm-gateway/) |
 | 007 | 2026-11-07 | Gerçek zamanlı mesajlaşma ve presence (WebSocket gateway, Redis rehber + Pub/Sub, sohbet başına seq, idempotent gönderim, outbox + Kafka fan-out, senkron; para isteği ayrı servis + olaylardan kart) | Klasik | ⭐⭐⭐⭐⭐ İleri | [challenges/007-realtime-messaging](challenges/007-realtime-messaging/) |
+| 008 | 2026-11-11 | Provizyon servisi ve gerçek idempotency (fiat + kripto hold, tek tx idempotency + savepoint, UUIDv7 key + günlük partition, iş seviyesi tekillik, çekim worker'ı lease + fencing, outbox, ledger + mutabakat) | Klasik | ⭐⭐⭐⭐ Orta-İleri | [challenges/008-provision-idempotency](challenges/008-provision-idempotency/) |
 
 ## Lab'lar
 

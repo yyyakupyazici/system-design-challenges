@@ -1,0 +1,10 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: provision
+resources:
+  - 00-namespace.yaml
+  - 10-config.yaml
+  - 30-provision-service.yaml
+  - 50-networkpolicy.yaml
+# PostgreSQL bu manifestlerde YOK: para verisi yönetilen/HA bir PostgreSQL'de (Patroni, CloudNativePG, RDS) durur.
+# Bağlantı bilgisi 11-secret.example.yaml şablonundaki gibi bir Secret ile verilir (gerçek değerler repoya girmez).

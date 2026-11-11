@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant C1 as İstemci (deneme 1)
+    participant C2 as İstemci (retry, aynı key)
+    participant API as provision-service
+    participant DB as PostgreSQL
+
+    C1->>API: POST /v1/provisions · Idempotency-Key K
+    API->>DB: BEGIN · INSERT idempotency_keys(K) ON CONFLICT DO NOTHING
+    Note over DB: K satırı commit edilmemiş (kilitli)
+    C2->>API: POST /v1/provisions · Idempotency-Key K
+    API->>DB: BEGIN · INSERT idempotency_keys(K) ...
+    Note over DB: unique indekste BEKLER (en fazla lock_timeout)
+    API->>DB: SAVEPOINT · provizyon + bakiye + ledger + outbox
+    API->>DB: UPDATE idempotency_keys SET response=… · COMMIT
+    API-->>C1: 201 (cevap kayıtta)
+    DB-->>API: (C2) çakışma → DO NOTHING
+    API->>DB: SELECT kayıt · parmak izi eşit mi?
+    API-->>C2: 201 · Idempotent-Replayed: true · bayt bayt aynı gövde
+
+    Note over C1,DB: C1 COMMIT'ten önce çökerse: ROLLBACK → K'nın izi kalmaz,<br/>C2'nin INSERT'ü başarılı olur ve işi C2 yapar. Takılı IN_PROGRESS yok.

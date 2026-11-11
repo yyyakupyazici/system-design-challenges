@@ -1,0 +1,65 @@
+server:
+  port: 8080
+  shutdown: graceful
+
+spring:
+  application:
+    name: provision-service
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/provision}
+    username: ${DB_USER:provision}
+    password: ${DB_PASSWORD:provision}
+    hikari:
+      maximum-pool-size: ${DB_POOL_SIZE:20}
+      connection-timeout: 5000
+      # Uzun süren/asılı sorgular ve "transaction açık unutulmuş" bağlantılar havuzu sonsuza dek tutmasın.
+      data-source-properties:
+        options: "-c statement_timeout=10s -c idle_in_transaction_session_timeout=30s"
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+  lifecycle:
+    timeout-per-shutdown-phase: 20s
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+
+provision:
+  idempotency:
+    accept-window: 24h          # bundan eski key REDDEDİLİR
+    max-clock-skew: 5m
+    retention: 72h              # >= accept-window + skew + 1h (açılışta doğrulanır)
+    lock-wait-timeout: 2s       # aynı key ile eşzamanlı ikinci istek en fazla bu kadar bekler → 409
+    partitions-ahead-days: 3
+  holds:
+    default-ttl: 15m
+    max-ttl: 24h
+  expiry:
+    enabled: true
+    interval: 1s
+    batch-size: 500
+  withdrawals:
+    worker-enabled: true
+    poll-interval: 500ms
+    lease: 30s
+    confirmation-poll-delay: 2s
+    retry-backoff: 5s
+    max-failures: 5
+  outbox:
+    relay-enabled: true
+    interval: 200ms
+    batch-size: 500
+  reconciliation:
+    interval: 5m
+  chain:
+    fake-confirm-after-polls: 2

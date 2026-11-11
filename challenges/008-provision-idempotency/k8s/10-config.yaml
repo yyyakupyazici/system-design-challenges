@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: provision-config
+data:
+  DB_URL: jdbc:postgresql://provision-pg-rw.databases.svc:5432/provision
+  DB_POOL_SIZE: "20"
+  # Pod başına 20 bağlantı × 6 pod = 120; PostgreSQL max_connections ve PgBouncer buna göre boyutlanır.
