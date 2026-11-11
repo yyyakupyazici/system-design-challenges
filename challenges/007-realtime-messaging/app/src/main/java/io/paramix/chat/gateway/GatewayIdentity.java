@@ -26,4 +26,9 @@ public class GatewayIdentity {
     public static String channelOf(String instanceId) {
         return "gw:" + instanceId;
     }
+
+    /** Park kutusu: Pub/Sub'da bu gateway'e ulaşamayan teslimatlar (bkz. DeliveryPublisher). */
+    public static String parkedKeyOf(String instanceId) {
+        return "gw:parked:" + instanceId;
+    }
 }

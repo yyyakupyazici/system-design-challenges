@@ -69,6 +69,7 @@ chat:
     probe-interval: 1s                  # gateway kendi Pub/Sub kanalına bu aralıkla sonda yayınlar
     probe-timeout: 3s                   # bu süre sonda dönmezse Pub/Sub yolu bozuk sayılır
     resync-spread: 10s                  # yol düzelince istemcilere RESYNC bu süreye yayılarak gider
+    parked-max: 10000                   # Pub/Sub'da ulaşılamayan gateway için park kutusu sınırı (aşılırsa herkese RESYNC)
   retry:
     max-elapsed: 30s                    # Kafka tüketicisi hata alırsa beklemeli olarak bu süre boyunca dener
   sync:

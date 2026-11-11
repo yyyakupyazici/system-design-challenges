@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
+import io.paramix.chat.config.ChatProperties;
 import io.paramix.chat.fanout.DeliveryPublisher;
 import io.paramix.chat.protocol.Json;
 
@@ -14,8 +15,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.data.redis.listener.ChannelTopic;
 import org.springframework.data.redis.listener.RedisMessageListenerContainer;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.TextMessage;
 
@@ -28,6 +33,11 @@ import org.springframework.web.socket.TextMessage;
  * (hash(cihaz) mod 16). Aynı cihazın mesajları hep aynı şeritte, sırayla yazılır; farklı cihazlar paralel işlenir.
  * Bu, outbox relay'deki "partition'a göre sıralı paralellik" fikrinin gateway içindeki hali. Mesajları gelen her
  * mesaj için ayrı thread'e vermek (Spring'in varsayılanı) aynı cihaza giden iki mesajı yarıştırır.
+ *
+ * <p><b>Park kutusu:</b> Pub/Sub aboneliği olmadığı anda gelen teslimatları yayıncı {@code gw:parked:<instance>}'a
+ * bırakır (bkz. {@link DeliveryPublisher}). Gateway kutuyu her sonda aralığında (1 sn) atomik olarak alıp boşaltır ve
+ * Pub/Sub'dan gelmiş gibi aynı şeritlerden teslim eder. Komut bağlantısı ile yapılır, yani abonelik hâlâ kopukken de
+ * çalışır. Sıra: park edilen eski mesaj, arada canlı gelen yeni mesajdan SONRA ulaşabilir; istemci seq'e göre dizer.
  */
 @Component
 @ConditionalOnProperty(name = "chat.roles.gateway", havingValue = "true", matchIfMissing = true)
@@ -37,6 +47,15 @@ public class GatewayInbox implements MessageListener {
 
     private static final int LANES = 16;
 
+    /** Al ve sil, araya kimse girmeden: iki kez teslim edilmesin, arada eklenen kaybolmasın. */
+    private static final RedisScript<java.util.List> TAKE_ALL = new DefaultRedisScript<>("""
+            local v = redis.call('LRANGE', KEYS[1], 0, -1)
+            if #v > 0 then redis.call('DEL', KEYS[1]) end
+            return v""", java.util.List.class);
+
+    private final StringRedisTemplate redis;
+    private final String parkedKey;
+    private final int parkedMax;
     private final LocalSessions sessions;
     private final PubSubHealth health;
     private final Json json;
@@ -44,7 +63,11 @@ public class GatewayInbox implements MessageListener {
     private final ExecutorService[] lanes = new ExecutorService[LANES];
 
     public GatewayInbox(RedisMessageListenerContainer container, GatewayIdentity identity, LocalSessions sessions,
-                        PubSubHealth health, Json json, MeterRegistry meters) {
+                        PubSubHealth health, Json json, MeterRegistry meters, StringRedisTemplate redis,
+                        ChatProperties props) {
+        this.redis = redis;
+        this.parkedKey = GatewayIdentity.parkedKeyOf(identity.instanceId());
+        this.parkedMax = props.gateway().parkedMax();
         this.sessions = sessions;
         this.health = health;
         this.json = json;
@@ -58,7 +81,30 @@ public class GatewayInbox implements MessageListener {
 
     @Override
     public void onMessage(Message message, byte[] pattern) {
-        JsonNode n = json.read(new String(message.getBody()));
+        handle(new String(message.getBody(), java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    @Scheduled(fixedDelayString = "${chat.gateway.probe-interval:1s}")
+    public void drainParked() {
+        java.util.List<?> parked;
+        try {
+            parked = redis.execute(TAKE_ALL, java.util.List.of(parkedKey));
+        } catch (RuntimeException e) {
+            log.debug("Park kutusu okunamadı (Redis yok?): {}", e.getMessage());
+            return;
+        }
+        if (parked == null || parked.isEmpty()) {
+            return;
+        }
+        parked.forEach(p -> handle(p.toString()));
+        meters.counter("chat.delivery.unparked").increment(parked.size());
+        if (parked.size() >= parkedMax) {
+            health.parkedOverflow();
+        }
+    }
+
+    private void handle(String payload) {
+        JsonNode n = json.read(payload);
         if (n.has("probe")) {
             health.probeReceived();                    // kendi sondamız: hızlı yol uçtan uca çalışıyor
             return;

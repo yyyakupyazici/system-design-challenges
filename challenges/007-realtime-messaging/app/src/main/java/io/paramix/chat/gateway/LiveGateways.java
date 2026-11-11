@@ -24,6 +24,13 @@ import org.springframework.stereotype.Component;
  *
  * Canlı gateway listesi her saniye bir kez okunup bellekte tutulur: fan-out her mesajda Redis'e "gw-7 canlı mı?"
  * diye sormaz.
+ *
+ * <p><b>Önbellek ıskası Redis'e sorulur.</b> Bellekteki liste 1 sn'ye kadar eski olabilir. Redis veriyi kaybedip
+ * açıldığında {@code gw:alive} boştur; gateway lease'ini ve rehber kayıtlarını hemen yeniden yazar, ama worker'ın
+ * listesi bir sonraki yenilemeye kadar "kimse canlı değil" der. O pencerede gelen mesaj "herkes çevrimdışı" sanılıp
+ * hiçbir gateway'e gönderilmiyordu (testte yakalandı). Artık listede olmayan gateway için tek bir ZSCORE ile taze
+ * cevap alınır; canlıysa listeye eklenir. Gerçekten ölü gateway'lerin bayat kayıtları için bu ek bir Redis turu demek,
+ * ama bir mesajı yanlışlıkla düşürmekten ucuz.
  */
 @Component
 public class LiveGateways {
@@ -70,7 +77,19 @@ public class LiveGateways {
     }
 
     public boolean isAlive(String instanceId) {
-        return alive.get().contains(instanceId);
+        if (alive.get().contains(instanceId)) {
+            return true;
+        }
+        Double score = redis.opsForZSet().score(KEY, instanceId);
+        boolean fresh = score != null && score >= System.currentTimeMillis() - props.gateway().lease().toMillis();
+        if (fresh) {
+            alive.updateAndGet(s -> {
+                java.util.Set<String> n = new java.util.HashSet<>(s);
+                n.add(instanceId);
+                return Set.copyOf(n);
+            });
+        }
+        return fresh;
     }
 
     public void leave() {

@@ -28,7 +28,7 @@ import org.springframework.web.socket.TextMessage;
  * <pre>
  *  sonda probe-timeout (3 sn) boyunca gelmedi → BOZUK: bu arada gelen mesajlar bu gateway'e ulaşmamış olabilir
  *  sonda tekrar geldi                         → DÜZELDİ:
- *     ① bağlı bütün cihazları rehbere YENİDEN yaz (Redis verisini kaybederek yeniden başlamış olabilir)
+ *     ① önce kendi lease'ini, sonra bağlı bütün cihazları rehbere YENİDEN yaz (Redis verisini kaybetmiş olabilir)
  *     ② her istemciye RESYNC {afterMs: 0..resync-spread rastgele} → istemci SYNC/HEADS ile kaçırdığını çeker
  * </pre>
  */
@@ -42,6 +42,7 @@ public class PubSubHealth {
     private final GatewayIdentity identity;
     private final LocalSessions sessions;
     private final RoutingTable routing;
+    private final LiveGateways live;
     private final ChatProperties props;
     private final Json json;
     private final MeterRegistry meters;
@@ -49,11 +50,12 @@ public class PubSubHealth {
     private final AtomicBoolean degraded = new AtomicBoolean();
 
     public PubSubHealth(StringRedisTemplate redis, GatewayIdentity identity, LocalSessions sessions, RoutingTable routing,
-                        ChatProperties props, Json json, MeterRegistry meters) {
+                        LiveGateways live, ChatProperties props, Json json, MeterRegistry meters) {
         this.redis = redis;
         this.identity = identity;
         this.sessions = sessions;
         this.routing = routing;
+        this.live = live;
         this.props = props;
         this.json = json;
         this.meters = meters;
@@ -86,7 +88,16 @@ public class PubSubHealth {
         }
     }
 
+    /** Park kutusu taştı: bazı teslimatlar atılmış olabilir, kimin kaçırdığı bilinmiyor → herkese RESYNC. */
+    void parkedOverflow() {
+        log.warn("Park kutusu taştı, bütün bağlantılara RESYNC");
+        Thread.ofVirtual().start(this::recover);
+    }
+
     private void recover() {
+        // Sıra önemli: önce lease, sonra rehber. Rehberde "Ayşe gw-b'de" görülüp gw-b canlı bulunamazsa mesaj
+        // "çevrimdışı" sayılır ve hiçbir yere gitmez.
+        live.heartbeat();
         List<LocalSessions.Session> all = List.copyOf(sessions.all());
         int reregistered = 0;
         for (LocalSessions.Session s : all) {

@@ -16,7 +16,7 @@ public record ChatProperties(Roles roles, Gateway gateway, Sync sync, Kafka kafk
     public record Gateway(String name, Duration heartbeat, Duration lease, int maxConnections, int handshakesPerSecond,
                           Duration drainSpread, Duration sendTimeLimit, int sendBufferLimit,
                           @DefaultValue("1s") Duration probeInterval, @DefaultValue("3s") Duration probeTimeout,
-                          @DefaultValue("10s") Duration resyncSpread) {
+                          @DefaultValue("10s") Duration resyncSpread, @DefaultValue("10000") int parkedMax) {
     }
 
     public record Retry(@DefaultValue("30s") Duration maxElapsed) {

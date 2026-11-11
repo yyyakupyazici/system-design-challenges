@@ -243,6 +243,15 @@ Dört katmanlı çözüm:
 
 Gateway, Redis yokken de bağlantı kabul eder ve mesaj gönderimi (DB yolu) çalışmaya devam eder. Rehber kaydı Redis gelince sondanın tetiklediği toparlanmada yazılır.
 
+**Redis geri gelirken iki yarış (testlerde yakalandı, düzeltildi):**
+
+| Yarış | Ne oluyordu | Düzeltme |
+|---|---|---|
+| **Abonelik penceresi** | Lettuce yeniden bağlanınca Pub/Sub aboneliği birkaç yüz ms sonra kurulur. Bu arada yapılan `PUBLISH`'i kimse almaz. Pencere sonda zaman aşımından (3 sn) kısaysa RESYNC de gitmez, mesaj ancak HEADS ile (≤1 dk) gelir | `PUBLISH` alan abone sayısını döner. Canlı sanılan gateway için **0** dönerse yayıncı mesajı o gateway'in **park kutusuna** bırakır (`gw:parked:<instance>`: `RPUSH` + `LTRIM` + `PEXPIRE`, tek Lua). Gateway kutuyu her saniye atomik olarak alıp aynı cihaz şeritlerinden teslim eder. Komut bağlantısıyla çalıştığı için abonelik hâlâ kopukken de işler. Kutu taşarsa (10.000) herkese RESYNC. Gateway gerçekten öldüyse kutu lease süresi sonunda kendiliğinden silinir |
+| **Boş lease listesi** | Redis veriyi kaybedip açılınca `gw:alive` boş. Gateway rehbere hemen yeniden yazıyordu ama worker'ın bellekteki canlı listesi 1 sn'ye kadar "kimse canlı değil" diyordu. O pencerede gelen mesaj "herkes çevrimdışı" sayılıp **hiçbir yere gönderilmiyordu** | ① Gateway toparlanırken **önce lease'ini, sonra rehberi** yazar. ② Worker, bellekteki listede olmayan gateway'i düşürmeden önce Redis'e tek `ZSCORE` ile taze sorar |
+
+İkisinin ortak dersi: **"gönderilemedi" ile "gönderildi ama kimse almadı" farklı sinyaller.** İlki exception (tekrar dene), ikincisi sessiz bir 0. Ateşle-unut bir kanalda dönüş değerini okumak, bir kaybı görünür yapmanın en ucuz yolu.
+
 **Ders:** "Kayıp yok" ile "kullanıcı zamanında görüyor" aynı şey değil. İlkini kalıcı yol garanti eder. İkincisi için her bağımlılığın çökme senaryosunda **hangi başka işin de durduğunu** ve **kullanıcının kaçırdığını nasıl fark ettiğini** tek tek düşünmek gerekir.
 
 ### 5.11 Darboğazlar ve trade-off'lar
@@ -339,13 +348,15 @@ Sohbet entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) aya�
 | `PaymentEndToEndIT` | İki gerçek servis: HTTP ile iste → kart iki tarafa düşer. İki cihazdan aynı anda HTTP ile öde → para bir kez, sohbete tek "✅ ödendi". Cüzdan cevabı kaybolur → reconciler kapatır, sohbet olaydan öğrenir. Ret sohbette görünür |
 | `BroadcastPresenceIT` | Kampanya kanalı iki gateway'deki abonelere ulaşır, push yok, abone yazamaz, geç gelen senkronla alır. "Yazıyor" iletilir ama saklanmaz. Presence: son görülme ve gizlilik |
 | `RedisOutageIT` | **A.** Redis 4 sn donduruluyor, mesaj bu sırada gönderiliyor: beklemeli tekrar deneme sayesinde canlı yoldan teslim edilir (tekrar deneme kapatılınca bu test başarısız oluyor, denendi). **B.** Redis kapatılıyor ve **boş** açılıyor: gönderme çalışır, çevrimdışına push gider, gateway sondası toparlanır, rehberi yeniden doldurur, RESYNC gönderir, istemci HEADS + SYNC ile kaçırdığını alır, sonraki mesaj yine canlı gelir |
+| `PubSubGapIT` | Redis'i kapatmadan gateway'in aboneliği kaldırılır (yeniden bağlanma penceresinin aynısı). Bu sırada gönderilen mesaj park kutusu üzerinden 3 sn içinde **canlı** gelir, RESYNC'e gerek kalmaz. Düzeltmeden önce kırmızıydı |
 | `GatewayDrainIT` | Boşaltılan gateway 30 istemciye 0–2 sn'ye yayılmış RECONNECT gönderir, rehberden siler, yeni bağlantıya 503 döner |
 | `AdmissionLimiterTest` | 5.000 eşzamanlı el sıkışmadan sadece kova kadarı kabul edilir, Retry-After rastgele |
 
-**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): ödeme modülü 9 entegrasyon testi, sohbet 2 birim + 21 entegrasyon testi geçti (son tam koşu: `BUILD SUCCESS`). **Kırılganlık notu:** bu değişiklikten sonra sohbet testleri 13 kez çalıştırıldı; 9'u tamamen temiz. Kalan 4'ün hepsi zamanlamaya duyarlı, bu değişiklikte dokunulmayan testlerde: üçü `RedisOutageIT` / hemen ardından gelen test (Redis geri geldikten sonraki ilk mesaj 15–20 sn içinde canlı yoldan gelmedi), biri `AdmissionLimiterTest`. Önceki commit aynı makinede 7/7 temiz geçti; fark kesin olarak açıklanamadı. Olası sebep (doğrulanmadı): Redis yeniden bağlanırken fan-out'un yayını, gateway'in Pub/Sub aboneliği yenilenmeden yapılırsa mesaj canlı yoldan kaybolur ve sadece RESYNC → SYNC ile gelir; test istemcisi RESYNC'e cevap vermediği için bekler. `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
+**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): ödeme modülü 9 entegrasyon testi, sohbet 2 birim + 22 entegrasyon testi geçti. Redis yarışları düzeltildikten sonra sohbet testleri art arda 8 kez çalıştırıldı, 8'i de temiz (öncesinde 13 koşunun 3'ünde Redis kesintisi testleri kırılıyordu). `AdmissionLimiterTest` duvar saatine bağlı bir birim testi ve yük altında nadiren kırılabiliyor (19 koşuda 1 kez görüldü). `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
 
 **Testlerin yakaladığı gerçek hatalar:**
 - Spring Kafka'nın varsayılan hata işleyicisi kısa bir Redis kesintisinde olayları beklemeden atlıyordu (§5.10).
+- Redis geri gelirken iki yarış: abonelik penceresinde yayınlanan mesaj sessizce kayboluyordu, ve boş lease listesi yüzünden mesaj "herkes çevrimdışı" sayılıyordu (§5.10).
 - Spring'in Redis dinleyicisi her Pub/Sub mesajını ayrı bir thread'de işliyordu ve gw-b'deki üye grup mesajlarını farklı sırada gördü. Cihaz şeritleriyle düzeltildi (§5.1).
 
 ## 7. Dürüst notlar
