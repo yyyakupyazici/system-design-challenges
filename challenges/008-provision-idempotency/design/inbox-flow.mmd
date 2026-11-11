@@ -1,0 +1,21 @@
+sequenceDiagram
+    autonumber
+    participant EM as Emir motoru
+    participant K as Kafka trade.events
+    participant L as TradeEventsListener
+    participant DB as PostgreSQL
+
+    EM->>K: ORDER_FILLED (key=orderId, event_id=E1)
+    K->>L: E1 (offset 41)
+    L->>DB: BEGIN · INSERT inbox(E1) ON CONFLICT DO NOTHING → 1 satır
+    L->>DB: SAVEPOINT · capture (provizyon + bakiye + ledger + outbox) · COMMIT
+    Note over L,K: Offset commit'ten ÖNCE pod öldü (deploy, OOM)
+    K->>L: E1 tekrar (offset 41, başka pod)
+    L->>DB: INSERT inbox(E1) → 0 satır (çakışma)
+    L-->>K: DUPLICATE · offset commit · etki yok
+
+    EM->>K: ORDER_CANCELLED (E2) ... sonra ORDER_FILLED (E3) aynı emir
+    K->>L: E2 → APPLIED (release)
+    K->>L: E3 → inbox(E3) yeni, ama provizyon RELEASED
+    L->>DB: ROLLBACK TO SAVEPOINT · inbox(E3) = CONFLICT · COMMIT
+    Note over L: ERROR log + inbox_messages_total{outcome=CONFLICT}<br/>Tekrar teslim (E1) sessiz, gerçek çelişki (E3) alarm

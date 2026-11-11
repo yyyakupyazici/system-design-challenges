@@ -2,7 +2,7 @@
 
 **Kategori:** Klasik · **Zorluk:** ⭐⭐⭐⭐ Orta-İleri · **Tarih:** 2026-11-11
 
-Fiat ve kripto varlıklara işlem öncesi provizyon (hold) koyan servis. Odak noktası **idempotency**. Bu servis için idempotency tek bir header'dan ibaret değil, dört katmanda çözülmesi gereken bir problem: API, iş kuralı, mesajlaşma ve dış dünya. PostgreSQL üzerinde, 1 milyon müşteri ölçeğinde.
+Fiat ve kripto varlıklara işlem öncesi provizyon (hold) koyan servis; olaylar Kafka üzerinden giriyor ve çıkıyor. Odak noktası **idempotency**. Bu servis için idempotency tek bir header'dan ibaret değil, dört katmanda çözülmesi gereken bir problem: API, iş kuralı, mesajlaşma ve dış dünya. PostgreSQL üzerinde, 1 milyon müşteri ölçeğinde.
 
 ---
 
@@ -42,15 +42,18 @@ Eski sistemde yaşananlar:
 | Kayıtları silmek | Günlük `DELETE ... WHERE created_at < ...` | Partition + `DROP`. Ama partition'lı tabloda unique kısıt partition anahtarını içermek zorunda, bu yüzden `created_at` ile bölünemez. **Çözüm: UUIDv7 key** (§5.2) |
 | Çekimi API'de bitirmek | İstek içinde zincire yayınla | İstek yolu dış dünyaya dokunmaz: provizyon + PENDING, sonra **202**. Zincir işini lease/fencing'li worker yapar |
 | Çekim hata verdi | Provizyonu bırak (iade) | Para zincirde olabilir. **MANUAL_REVIEW**, provizyon bloke kalır. Otomatik iade, belirsiz durumda müşteriye bedava para demek |
+| Inbox gerekli mi? | Durum makinesi zaten "HELD değilse dokunma" diyor | Para iki kez hareket etmez, doğru. Ama inbox olmadan **aynı iptalin ikinci teslimi** ile **iptal edilmiş emre gelen yeni bir dolum** aynı görünür. İlki zararsız tekrardır, ikincisi gerçek bir para hatası. Inbox ilkini sessizce atlar, ikincisini `CONFLICT` olarak kaydeder (§5.8) |
+| Tüketicide tekilleştirme anahtarı | Kafka offset'i | **Üreticinin `event_id`'si.** Relay aynı olayı tekrar yayınlarsa olay farklı bir offset'e düşer ama `event_id` aynı kalır |
 
 ## 4. Mimari
 
-Diyagramlar: [mimari](design/architecture.mmd) · [idempotent istek akışı](design/idempotent-request.mmd) · [provizyon durumları](design/provision-states.mmd) · [çekim durumları](design/withdrawal-states.mmd)
+Diyagramlar: [mimari](design/architecture.mmd) · [idempotent istek akışı](design/idempotent-request.mmd) · [inbox akışı](design/inbox-flow.mmd) · [provizyon durumları](design/provision-states.mmd) · [çekim durumları](design/withdrawal-states.mmd)
 
 ```
 İstek yolu (senkron, tek tx):   istemci → gateway → provision-service → PostgreSQL → cevap
 Çekim (asenkron, adım adım):    withdrawals (PENDING) → worker: imzala → yayınla → onay → capture/release
-Olaylar (en az bir kez):        outbox → relay → Kafka → tüketici (event_id ile inbox)
+Giden olaylar (en az bir kez):  outbox → relay → Kafka provision.events (key = aggregateId)
+Gelen olaylar:                  Kafka trade.events → inbox + capture/release (tek tx) → offset commit
 Denetim:                        mutabakat (bakiye = provizyonlar = ledger)
 ```
 
@@ -58,7 +61,7 @@ Denetim:                        mutabakat (bakiye = provizyonlar = ledger)
 |---|---|---|---|
 | **1. API** | Mobil retry, çift tık, gateway retry | `Idempotency-Key` (UUIDv7) + `idempotency_keys` + parmak izi | `idempotency/IdempotentExecutor` |
 | **2. İş** | Aynı emir farklı key ile (key kaybı, emir servisinin retry'ı) | `UNIQUE (customer_id, operation_type, operation_ref)` + koşullu durum geçişleri | `domain/ProvisionService` |
-| **3. Mesajlaşma** | Relay çöktü, Kafka tekrar teslim etti | Outbox (aynı tx) + `event_id` (tüketici inbox'ı) | `outbox/*` |
+| **3. Mesajlaşma** | Relay çöktü, Kafka tekrar teslim etti, rebalance | Giden: outbox (aynı tx) + idempotent producer + `event_id`. Gelen: inbox (aynı tx) | `outbox/*`, `kafka/*`, `trade/*` |
 | **4. Dış dünya** | Yayından sonra çökme, timeout | İmzalı tx yayından ÖNCE kalıcı, önce hash ile sorgu, sonra aynı baytlar + fencing | `withdrawal/WithdrawalWorker` |
 | **Yatırım** | Webhook + zincir dinleyici + mutabakat aynı olayı getirir | Doğal anahtar `UNIQUE (source, external_ref)` | `domain/DepositService` |
 
@@ -131,16 +134,51 @@ PENDING ──① imzala, tx_hash + imzalı baytları YAZ──▶ SIGNED ──
 
 Yatırımda Idempotency-Key kullanılmıyor. Banka EFT referansı ya da `zincir:tx_hash:log_index` zaten dünyada tek. `UNIQUE (source, external_ref)`: aynı olay üç kaynaktan gelse de bakiyeye bir kez yazılıyor (`201` yeni, `200` zaten vardı). Aynı referans farklı tutar veya müşteri ile gelirse `409`. Bu ya bir entegrasyon hatası ya da saldırıdır; sessizce yutulmuyor.
 
-### 5.7 Outbox
+### 5.7 Outbox → Kafka
 
-Olay, iş verisiyle aynı transaction'da yazılıyor. Relay her turda `pg_try_advisory_xact_lock` alıyor; böylece pod sayısından bağımsız olarak tek relay çalışıyor ve aynı provizyonun olayları sırayla gidiyor. Teslim garantisi "en az bir kez"; tüketici `event_id` ile kendi inbox'ında tekilleştiriyor. Yayınlanan satırlar **id listesiyle** siliniyor. `DELETE ... WHERE id <= son` yanlış olurdu: identity değeri INSERT anında alınıyor, commit sırası farklı olabiliyor ve küçük id'li ama henüz commit edilmemiş bir olay yayınlanmadan silinebilirdi.
+Olay, iş verisiyle aynı transaction'da yazılıyor. Relay her turda `pg_try_advisory_xact_lock` alıyor; böylece pod sayısından bağımsız olarak tek relay çalışıyor ve aynı provizyonun olayları sırayla gidiyor. Yayınlanan satırlar **id listesiyle** siliniyor. `DELETE ... WHERE id <= son` yanlış olurdu: identity değeri INSERT anında alınıyor, commit sırası farklı olabiliyor ve küçük id'li ama henüz commit edilmemiş bir olay yayınlanmadan silinebilirdi.
 
-### 5.8 Ledger ve mutabakat
+`KafkaEventPublisher` (`provision.kafka.enabled=true`):
+
+| Karar | Neden |
+|---|---|
+| Key = `aggregateId` | Bir provizyonun bütün olayları aynı partition'a gider; `held → captured` sırası tüketicide bozulmaz |
+| `enable.idempotence=true`, `acks=all`, `max.in.flight ≤ 5` | Producer'ın kendi ağ tekrarı Kafka'da kopya ya da sıra bozulması üretmez |
+| Header'da `event_id`, `event_type`, `aggregate_type` + değerde zarf | Tüketici tekilleştirme anahtarını header'dan alır. Zarf (`eventId`, `eventType`, `occurredAt`, `data`) sayesinde header'ları kaybeden araçlar da mesajı işleyebilir |
+| Parti senkron: hepsini gönder, `flush`, hepsinin onayını bekle | Biri bile başarısızsa relay transaction'ı geri alır ve hiçbir satır silinmez |
+| `delivery.timeout.ms` (15 sn) < `idle_in_transaction_session_timeout` (30 sn) | Relay onayı DB transaction'ı açıkken bekliyor. Kafka yavaşlarsa önce producer vazgeçmeli, PostgreSQL oturumu öldürmemeli |
+
+Idempotent producer **relay'in tekrarını engellemez**: Kafka'ya yazıp outbox satırını silemeden çöken relay aynı olayı yeni bir mesaj olarak tekrar yollar. Bu yüzden tekilleştirmenin son durağı tüketicinin inbox'ı. (Kafka transaction'ları da bunu çözmez; DB ile Kafka arasında ortak bir transaction yok.)
+
+### 5.8 Inbox: `trade.events` tüketimi
+
+Emir motoru provizyonu `operationType=TRADE, operationRef=orderId` ile açar, sonra `trade.events`'e `ORDER_FILLED` (gerçekleşen tutarla) ya da `ORDER_CANCELLED` yazar. Provizyon servisi bu olaylarla capture veya release yapar.
+
+```
+BEGIN
+  ① INBOX   INSERT inbox (consumer, event_id) ON CONFLICT DO NOTHING   → çakışma: DUPLICATE, hiçbir şey yapma
+  ② ETKİ    SAVEPOINT · capture / release (provizyon + bakiye + ledger + outbox)
+            └─ durumla çelişiyor → ROLLBACK TO SAVEPOINT · inbox = CONFLICT · alarm · mesajı tüket
+COMMIT  →  sonra offset commit (ack-mode RECORD)
+```
+
+| Durum | Sonuç | Neden |
+|---|---|---|
+| Aynı `event_id` tekrar geldi (relay tekrarı, offset commit'ten önce çökme, rebalance) | `DUPLICATE`, sessiz | PK çakışması. Eşzamanlı iki tüketicide ikincisi PK'da bekler, API idempotency'sinin birebir aynası |
+| Olay mevcut durumla çelişiyor (iptal edilmiş emre dolum, provizyondan büyük dolum) | `CONFLICT`, kayıt + `ERROR` log + metrik, mesaj tüketilir | Tekrar denemek düzeltmez. Partition'ı tıkamak diğer müşterilerin emirlerini de durdururdu |
+| Provizyon henüz görünmüyor | Transaction geri alınır, inbox'a **yazılmaz**, Kafka tekrar dener (~10 sn), sonra DLT | Geçici olabilir. Inbox'a yazılsaydı tekrar denemede "zaten işlendi" sanılıp olay kaybolurdu |
+| Bozuk mesaj (`event_id` yok, JSON bozuk) | Tekrar denemeden `trade.events.DLT` | Kalıcı hata. DLT hedefi kodda açıkça yazılı: spring-kafka'nın varsayılan son eki sürümler arasında `.DLT` → `-dlt` olarak değişti |
+
+- **Offset sırası:** Önce DB commit, sonra offset commit. Ters sıra mesaj **kaybı** demek olurdu; bu sıra ise sadece tekrar üretir, onu da inbox yakalar.
+- **Saklama:** Inbox kayıtları 14 gün tutulur; bu süre Kafka topic retention'ından (7 gün) uzun olmalı. Aksi halde Kafka'da hâlâ tekrar okunabilen bir mesajın inbox kaydı silinmiş olur. `CONFLICT` kayıtları silinmez; onları bir insan kapatır.
+- **Dinleyici ince:** `TradeEventsListener` sadece mesajı çözüyor, kurallar `TradeEventHandler`'da. Böylece kurallar Kafka olmadan da test edilebiliyor.
+
+### 5.9 Ledger ve mutabakat
 
 - **Ledger:** Çift kayıt tutuluyor; her journal'ın toplamı sıfır. Kovalar: `AVAILABLE`, `HELD`, `EXTERNAL` (dış dünyadan gelen), `SETTLED` (capture ile çıkan). `UPDATE` ve `DELETE` trigger ile yasak; düzeltme ters kayıtla yapılıyor. Sistem hesapları için `balances` satırı tutulmuyor, aksi halde bütün işlemlerin kilitlediği tek bir sıcak satır (hot row) oluşurdu.
 - **Mutabakat:** `REPEATABLE READ` ile tek bir snapshot üzerinde üç kontrol yapılıyor: `held` = HELD provizyonların toplamı, bakiye = ledger, journal toplamı = 0. Kısıtlar ve idempotency hataları **önler**; mutabakat önlenemeyeni **yakalar**. Testlerde her senaryodan sonra çalışıyor.
 
-### 5.9 Hata sözleşmesi (problem+json)
+### 5.10 Hata sözleşmesi (problem+json)
 
 | HTTP | `code` | Kaydedilir mi? | İstemci ne yapmalı |
 |---|---|---|---|
@@ -174,7 +212,7 @@ Kural: 5xx ve 409-in-progress durumunda **aynı key** ile tekrar dene. 4xx iş h
 
 ## 8. Testler
 
-`mvn verify`. Gerçek PostgreSQL (Testcontainers), gerçek HTTP, gerçek eşzamanlılık. Her testten sonra mutabakat çalışır ve tek bir fark testi kırar.
+`mvn verify` → 34 test. Gerçek PostgreSQL ve Kafka (Testcontainers), gerçek HTTP, gerçek eşzamanlılık. Her testten sonra mutabakat çalışır ve tek bir fark testi kırar.
 
 | Test | Kanıtladığı |
 |---|---|
@@ -196,11 +234,19 @@ Kural: 5xx ve 409-in-progress durumunda **aynı key** ile tekrar dene. 4xx iş h
 | `withdrawalProvisionIsOwnedByWithdrawal` | Çekim provizyonu süresiz (DB kısıtı), API'den kapatılamaz |
 | `partitionsAreCreatedAheadAndDroppedAfterRetention` | Partition bakımı idempotent |
 | `IdempotencyUnitTest` | UUIDv7, pencere, gece yarısı partition günü, parmak izi, saklama ayarı kontrolü |
+| `InboxIT.redeliveredEventIsAppliedOnce` | Aynı olay 3 kez → APPLIED, DUPLICATE, DUPLICATE |
+| `InboxIT.concurrentDeliveryOfSameEventAppliesOnce` | Rebalance: aynı olay 10 tüketiciye aynı anda → tek APPLIED |
+| `InboxIT.duplicateIsSilentButLateFillAfterCancelIsAConflict` | Tekrar teslim sessiz; iptal edilmiş emre yeni dolum CONFLICT, para hareket etmez |
+| `InboxIT.eventBeforeProvisionIsRetriedNotSwallowed` | Geçici hatada inbox'a yazılmaz, sonraki deneme uygular |
+| `KafkaIT.outboxEventsReachKafkaInOrderWithEventId` | Gerçek Kafka: key, aynı partition, sıra, header ve zarf; outbox boşalır |
+| `KafkaIT.duplicatedTradeEventIsAppliedOnce` | Aynı `event_id` 3 kez Kafka'ya → tek capture, tek inbox kaydı |
+| `KafkaIT.malformedMessageGoesToDltWithoutBlockingThePartition` | Bozuk mesaj 5 sn içinde DLT'ye (tekrar deneme yok), arkasındaki mesaj işlenir |
 
 **Testlerin testi (mutasyon):** Üç kritik satır tek tek bozuldu ve ilgili testlerin kırıldığı doğrulandı:
 - Fencing token kontrolü kaldırılınca `staleWorkerIsFenced` kırılıyor.
 - Parmak izi karşılaştırması kaldırılınca iki test kırılıyor.
 - Savepoint kaldırılınca `businessErrorIsStoredAndReplayed` kırılıyor.
+- Inbox kontrolü kaldırılınca `InboxIT`'in 4 testinden 3'ü kırılıyor.
 
 > Docker Engine 29+ kullanılıyorsa Testcontainers 1.21.4+ gerekir. 1.21.3 API 1.32 ile konuşuyor ve "client version 1.32 is too old" hatası alıyor. `pom.xml` bu yüzden sürümü sabitliyor.
 
@@ -218,7 +264,18 @@ cd challenges/008-provision-idempotency && docker compose up --build
 ./scripts/demo.sh
 ```
 
-Demo turu: tekrarlanan yatırım bildirimi; **iki farklı pod'a** aynı key ile 20 paralel istek (tek provizyon); aynı key farklı tutar (422); aynı emir yeni key (409); kısmi capture ve tekrarı; kayıtlı "bakiye yetersiz"; kripto çekimin PENDING → BROADCAST → CONFIRMED akışı; mutabakat.
+Demo turu:
+1. Tekrarlanan yatırım bildirimi.
+2. **İki farklı pod'a** aynı key ile 20 paralel istek → tek provizyon.
+3. Aynı key farklı tutar → 422; aynı emir yeni key → 409.
+4. Kısmi capture ve tekrarı; kayıtlı "bakiye yetersiz".
+5. Kripto çekimin PENDING → BROADCAST → CONFIRMED akışı.
+6. Aynı `ORDER_FILLED` olayı Kafka'ya 3 kez yazılır → tek capture, tek inbox kaydı.
+7. İptal edilmiş emre yeni dolum → `CONFLICT`.
+8. `provision.events` topic'inden olaylar (key, header, zarf).
+9. Mutabakat.
+
+`provision.kafka.enabled=false` (varsayılan, `KAFKA_ENABLED`) ile servis Kafka'sız çalışır; olaylar loga yazılır.
 
 Elle deneme:
 
@@ -238,11 +295,12 @@ curl -i -X POST localhost:8081/v1/provisions -H 'Content-Type: application/json'
 | `POST /v1/withdrawals`, `GET /v1/withdrawals/{id}` | Çekim (202) ve durumu |
 | `POST /internal/deposits` | Yatırım bildirimi (doğal anahtar) |
 | `GET /internal/reconciliation` | Mutabakat farkları (boş liste = tutarlı) |
-| `GET /actuator/prometheus` | `idempotency_requests_total{operation,outcome}`, `provisions_total`, `withdrawals_*` |
+| `GET /actuator/prometheus` | `idempotency_requests_total{operation,outcome}`, `inbox_messages_total{consumer,outcome}`, `provisions_total`, `withdrawals_*` |
 
 ## 10. Bilerek dışarıda bırakılanlar
 
 - **Kimlik:** `X-Customer-Id` header'ını demoda istemci gönderiyor. Üretimde gateway JWT'den yazar, istemcinin göndermesine izin verilmez.
-- **Kafka adaptörü:** `EventPublisher` arayüzü hazır, demo loglara yazıyor. Kafka için key = `aggregateId` olur ve producer `enable.idempotence=true` ile çalışır (bkz. 007).
+- **Şema yönetimi:** Olaylar JSON zarf. Birden çok ekip tüketmeye başlayınca Avro/Protobuf + schema registry ile geriye uyumluluk zorlanmalı.
+- **CONFLICT iş akışı:** Kayıt, log ve metrik var; bunun bir operasyon ekranına ya da alarm kanalına bağlanması ayrı bir iş.
 - **Gerçek zincir:** `ChainGateway` sözleşmesi hazır (imzala, yayınla, durum). Sıcak cüzdan nonce yönetimi, HSM/MPC imzalama ve reorg sonrası onay derinliği bu challenge'ın kapsamı dışında.
 - **Emir eşleştirme:** Capture'ı çağıran emir motoru ayrı bir sistem. Burada capture sadece bir API çağrısı.

@@ -21,6 +21,28 @@ spring:
   jackson:
     serialization:
       write-dates-as-timestamps: false
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5   # idempotence ile ≤5 sırayı korur
+        linger.ms: 5
+        request.timeout.ms: 5000
+        # Relay, onayı DB transaction'ı açıkken bekler: bu süre idle_in_transaction_session_timeout (30s) altında kalmalı.
+        delivery.timeout.ms: 15000
+    consumer:
+      group-id: provision-service
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      isolation-level: read_committed
+    listener:
+      ack-mode: record           # offset, handler'ın DB commit'inden SONRA
   lifecycle:
     timeout-per-shutdown-phase: 20s
 
@@ -63,3 +85,12 @@ provision:
     interval: 5m
   chain:
     fake-confirm-after-polls: 2
+  kafka:
+    enabled: ${KAFKA_ENABLED:false}
+    consumer-concurrency: 3
+    inbox-retention: 14d         # Kafka topic retention'ından (7 gün) UZUN olmalı
+    topics:
+      provision-events: provision.events
+      trade-events: trade.events
+      partitions: ${KAFKA_PARTITIONS:12}
+      replicas: ${KAFKA_REPLICAS:1}

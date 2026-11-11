@@ -154,6 +154,10 @@ public class ProvisionService {
                 .orElseThrow(() -> notFound(provisionId));
     }
 
+    public java.util.Optional<Provision> findByOperation(long customerId, OperationType type, String operationRef) {
+        return provisions.findByOperation(customerId, type, operationRef);
+    }
+
     public ProvisionView view(Provision p) {
         return ProvisionView.of(p, assets.require(p.asset()));
     }

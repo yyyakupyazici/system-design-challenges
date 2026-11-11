@@ -6,3 +6,7 @@ data:
   DB_URL: jdbc:postgresql://provision-pg-rw.databases.svc:5432/provision
   DB_POOL_SIZE: "20"
   # Pod başına 20 bağlantı × 6 pod = 120; PostgreSQL max_connections ve PgBouncer buna göre boyutlanır.
+  KAFKA_ENABLED: "true"
+  KAFKA_BOOTSTRAP: kafka-bootstrap.kafka.svc:9092
+  KAFKA_PARTITIONS: "12"
+  KAFKA_REPLICAS: "3"     # min.insync.replicas=2 ile birlikte: acks=all bir broker kaybında yazmayı sürdürür

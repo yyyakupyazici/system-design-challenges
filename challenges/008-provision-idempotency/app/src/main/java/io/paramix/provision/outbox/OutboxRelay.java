@@ -24,7 +24,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *       kalır ve tekrar gönderilir (en az bir kez).</li>
  * </ol>
  * Buradaki transaction iş satırlarını değil, sadece outbox satırlarını kilitler; yayıncıyı beklemesi para
- * hareketlerini bekletmez.
+ * hareketlerini bekletmez. Bekleme Kafka'nın delivery.timeout.ms'i ile sınırlı ve PostgreSQL'in
+ * idle_in_transaction_session_timeout'undan kısa tutulur (ikisi application.yml'de birlikte ayarlanır).
  */
 @Component
 @ConditionalOnProperty(name = "provision.outbox.relay-enabled", havingValue = "true")
@@ -64,14 +65,15 @@ public class OutboxRelay {
                 return 0;
             }
             List<Row> rows = jdbc.query("""
-                            SELECT id, event_id, aggregate_type, aggregate_id, event_type, payload::text
+                            SELECT id, event_id, aggregate_type, aggregate_id, event_type, payload::text, created_at
                             FROM outbox ORDER BY id LIMIT ?
                             """,
                     (rs, i) -> new Row(rs.getLong(1), new OutboxEvent(rs.getObject(2, UUID.class), rs.getString(3),
-                            rs.getObject(4, UUID.class), rs.getString(5), rs.getString(6))),
+                            rs.getObject(4, UUID.class), rs.getString(5), rs.getString(6),
+                            rs.getTimestamp(7).toInstant())),
                     batchSize);
-            for (Row row : rows) {
-                publisher.publish(row.event());
+            if (!rows.isEmpty()) {
+                publisher.publish(rows.stream().map(Row::event).toList());
             }
             if (!rows.isEmpty()) {
                 // "id <= son okunan" ile silmek YANLIŞ olurdu: identity değeri INSERT anında alınır, commit sırası

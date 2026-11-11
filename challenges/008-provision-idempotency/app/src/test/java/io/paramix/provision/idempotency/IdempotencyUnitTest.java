@@ -25,7 +25,7 @@ class IdempotencyUnitTest {
         return new ProvisionProperties(
                 new ProvisionProperties.Idempotency(Duration.ofHours(24), Duration.ofMinutes(5), retention,
                         Duration.ofSeconds(2), 3),
-                null, null, null, null, null);
+                null, null, null, null, null, null);
     }
 
     private final IdempotencyKeyPolicy policy =

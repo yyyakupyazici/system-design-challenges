@@ -1,7 +1,7 @@
 flowchart LR
     subgraph Clients
         M[Mobil / Web<br/>Idempotency-Key: UUIDv7]
-        T[Emir motoru<br/>capture / release]
+        T[Emir motoru]
         I[Banka & zincir<br/>entegrasyonları]
     end
 
@@ -14,6 +14,7 @@ flowchart LR
         WW[WithdrawalWorker<br/>lease + fencing]
         SW[ExpirySweeper<br/>SKIP LOCKED]
         OR[OutboxRelay<br/>advisory xact lock]
+        TL[TradeEventsListener<br/>→ TradeEventHandler]
         RC[Reconciliation]
     end
 
@@ -24,13 +25,21 @@ flowchart LR
         LE[ledger_entries<br/>append-only]
         WD[withdrawals]
         OB[outbox]
+        IN[inbox<br/>consumer + event_id]
     end
 
     CH[(Zincir / Banka)]
-    K[[Kafka<br/>provision.events]]
+    K[[Kafka<br/>provision.events<br/>key = aggregateId]]
+    KT[[Kafka<br/>trade.events<br/>key = orderId]]
+    DLT[[trade.events.DLT]]
 
     M --> GW --> API
-    T --> GW
+    T -->|provizyon aç| GW
+    T -->|ORDER_FILLED / CANCELLED<br/>header: event_id| KT
+    KT --> TL
+    TL -->|tek tx: inbox + etki| IN
+    TL --> PSV
+    TL -.bozuk mesaj.-> DLT
     I -->|/internal/deposits<br/>doğal anahtar| API
     API --> IE --> PSV
     PSV --> PR & BA & LE & OB
@@ -40,5 +49,5 @@ flowchart LR
     WW --> PSV
     SW --> PSV
     OR --> OB
-    OR -->|en az bir kez| K
+    OR -->|en az bir kez<br/>idempotent producer| K
     RC -.denetler.-> BA & PR & LE

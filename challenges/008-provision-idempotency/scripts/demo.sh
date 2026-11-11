@@ -2,6 +2,11 @@
 # Provizyon servisi demo turu. Önce: docker compose up --build  (iki instance: 8081 ve 8082)
 # Gereken: curl, jq, python3 (UUIDv7 üretmek için)
 set -euo pipefail
+cd "$(dirname "$0")/.."
+
+# Kafka araçları ve psql konteyner içinden çalışır (compose dışı ortamda bu değişkenlerle değiştirilebilir).
+KAFKA_EXEC=${KAFKA_EXEC:-docker compose exec -T kafka}
+PSQL=${PSQL:-docker compose exec -T postgres psql -U provision -d provision}
 
 A=${A:-http://localhost:8081}
 B=${B:-http://localhost:8082}
@@ -65,5 +70,37 @@ for i in $(seq 1 15); do
 done
 curl -s "$A/v1/balances" -H "X-Customer-Id: $CUSTOMER" | jq -c '.[] | {asset, available, held}' | sed 's/^/  bakiye: /'
 
-title "7) Mutabakat (boş liste = defter tutarlı)"
+title "8) Emir motoru: aynı ORDER_FILLED olayı (aynı event_id) Kafka'ya 3 kez yazılır → tek capture"
+ORDER="order-$CUSTOMER-kafka"
+post "$A/v1/provisions" "$(uuid7)" "{\"asset\":\"TRY\",\"amount\":\"300\",\"operationType\":\"TRADE\",\"operationRef\":\"$ORDER\"}" >/dev/null
+PID2=$(jq -r .id /tmp/demo-body)
+EID=$(uuid7)
+EVENT="{\"type\":\"ORDER_FILLED\",\"customerId\":$CUSTOMER,\"orderId\":\"$ORDER\",\"filledAmount\":\"275\"}"
+for i in 1 2 3; do printf 'event_id:%s\t%s\t%s\n' "$EID" "$ORDER" "$EVENT"; done |
+  $KAFKA_EXEC /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic trade.events \
+    --property parse.key=true --property parse.headers=true
+for i in $(seq 1 20); do
+  S=$(curl -s "$A/v1/provisions/$PID2" -H "X-Customer-Id: $CUSTOMER" | jq -r .status); [ "$S" = CAPTURED ] && break; sleep 0.5
+done
+curl -s "$A/v1/provisions/$PID2" -H "X-Customer-Id: $CUSTOMER" | jq -c '{status, capturedAmount, releasedAmount}' | sed 's/^/  provizyon: /'
+echo "  inbox (3 teslim, 1 kayıt):"
+$PSQL -tA -c "SELECT message_type, outcome FROM inbox WHERE message_id = '$EID'" | sed 's/^/    /'
+
+title "9) İptal edilmiş emre YENİ bir dolum olayı → CONFLICT (tekrar teslimden ayırt edilir, alarm)"
+ORDER3="order-$CUSTOMER-late"
+post "$A/v1/provisions" "$(uuid7)" "{\"asset\":\"TRY\",\"amount\":\"50\",\"operationType\":\"TRADE\",\"operationRef\":\"$ORDER3\"}" >/dev/null
+{ printf 'event_id:%s\t%s\t%s\n' "$(uuid7)" "$ORDER3" "{\"type\":\"ORDER_CANCELLED\",\"customerId\":$CUSTOMER,\"orderId\":\"$ORDER3\"}"
+  printf 'event_id:%s\t%s\t%s\n' "$(uuid7)" "$ORDER3" "{\"type\":\"ORDER_FILLED\",\"customerId\":$CUSTOMER,\"orderId\":\"$ORDER3\",\"filledAmount\":\"50\"}"; } |
+  $KAFKA_EXEC /opt/kafka/bin/kafka-console-producer.sh --bootstrap-server localhost:9092 --topic trade.events \
+    --property parse.key=true --property parse.headers=true
+sleep 3
+echo "  son 1 dakikadaki inbox kayıtları:"
+$PSQL -tA -c "SELECT message_type, outcome, coalesce(detail, '') FROM inbox WHERE consumer = 'provision.trade-events' AND received_at > now() - interval '1 minute' ORDER BY received_at" | sed 's/^/    /'
+
+title "10) provision.events (key = provizyon id, event_id header'ı) — bu emrin olayları"
+$KAFKA_EXEC /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server localhost:9092 --topic provision.events \
+  --from-beginning --timeout-ms 4000 --property print.key=true --property print.headers=true 2>/dev/null |
+  grep "$PID2" | cut -c1-200 | sed 's/^/  /' || true
+
+title "11) Mutabakat (boş liste = defter tutarlı)"
 curl -s "$A/internal/reconciliation" | jq -c . | sed 's/^/  /'

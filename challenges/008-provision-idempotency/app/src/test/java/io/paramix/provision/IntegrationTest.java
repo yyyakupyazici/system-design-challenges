@@ -66,7 +66,7 @@ public abstract class IntegrationTest {
 
     @BeforeEach
     void resetState() {
-        jdbc.execute("TRUNCATE balances, provisions, ledger_entries, deposits, withdrawals, outbox, idempotency_keys CASCADE");
+        jdbc.execute("TRUNCATE balances, provisions, ledger_entries, deposits, withdrawals, outbox, idempotency_keys, inbox CASCADE");
         chain.reset();
         api = new TestApi(port);
     }

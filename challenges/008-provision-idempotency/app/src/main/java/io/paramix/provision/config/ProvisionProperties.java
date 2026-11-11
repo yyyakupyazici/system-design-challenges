@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 
 @ConfigurationProperties("provision")
 public record ProvisionProperties(Idempotency idempotency, Holds holds, Expiry expiry, Withdrawals withdrawals,
-                                  Outbox outbox, Chain chain) {
+                                  Outbox outbox, Chain chain, Kafka kafka) {
 
     /**
      * @param acceptWindow   key'in doğum zamanı bundan eskiyse istek REDDEDİLİR (yeni key ile gelmeli).
@@ -47,6 +47,17 @@ public record ProvisionProperties(Idempotency idempotency, Holds holds, Expiry e
     }
 
     public record Outbox(boolean relayEnabled, int batchSize) {
+    }
+
+    /**
+     * @param enabled        false: olaylar loga yazılır, trade.events dinlenmez (Kafka'sız lokal geliştirme ve testler).
+     * @param inboxRetention inbox kayıtları bu kadar tutulur. Kafka topic retention'ından UZUN olmalı: bir mesaj
+     *                       Kafka'da hâlâ tekrar okunabiliyorken inbox kaydı silinmişse, tekrar okuma onu ilk kez görür.
+     */
+    public record Kafka(boolean enabled, Topics topics, java.time.Duration inboxRetention) {
+
+        public record Topics(String provisionEvents, String tradeEvents, int partitions, short replicas) {
+        }
     }
 
     /** Demo zinciri: kaç durum sorgusundan sonra işlemi kendiliğinden onaylasın (0 = asla, testler elle onaylar). */

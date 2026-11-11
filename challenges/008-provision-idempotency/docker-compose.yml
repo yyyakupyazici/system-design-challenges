@@ -1,16 +1,21 @@
-# Lokal: PostgreSQL + iki provizyon servisi (aynı veritabanı; idempotency pod'lar arası da çalışır).
+# Lokal: PostgreSQL + Kafka + iki provizyon servisi (aynı veritabanı; idempotency pod'lar arası da çalışır).
 #   docker compose up --build
 #   http://localhost:8081  (provision-1)
 #   http://localhost:8082  (provision-2)
-# Örnek istekler için README §9.
+#   ./scripts/demo.sh      (README §9)
+x-env: &env
+  DB_URL: jdbc:postgresql://postgres:5432/provision
+  DB_USER: provision
+  DB_PASSWORD: provision
+  KAFKA_ENABLED: "true"
+  KAFKA_BOOTSTRAP: kafka:9092
+  KAFKA_PARTITIONS: "6"
+
 x-app: &app
   build: { context: app }
   depends_on:
     postgres: { condition: service_healthy }
-  environment:
-    DB_URL: jdbc:postgresql://postgres:5432/provision
-    DB_USER: provision
-    DB_PASSWORD: provision
+    kafka: { condition: service_healthy }
 
 services:
   postgres:
@@ -18,15 +23,32 @@ services:
     environment: { POSTGRES_DB: provision, POSTGRES_USER: provision, POSTGRES_PASSWORD: provision }
     healthcheck: { test: ["CMD-SHELL", "pg_isready -U provision"], interval: 3s, retries: 20 }
     ports: ["5432:5432"]
+  kafka:
+    image: apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_LOG_RETENTION_HOURS: "168"   # 7 gün; inbox saklaması (14 gün) bundan uzun
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      retries: 30
   provision-1:
     <<: *app
+    environment: *env
     ports: ["8081:8080"]
   provision-2:
     <<: *app
     environment:
-      DB_URL: jdbc:postgresql://postgres:5432/provision
-      DB_USER: provision
-      DB_PASSWORD: provision
+      <<: *env
       # Demo zinciri (FakeChainGateway) pod belleğinde; gerçek zincir paylaşımlıdır. Demoda çekim worker'ı tek pod'da.
       PROVISION_WITHDRAWALS_WORKER_ENABLED: "false"
     ports: ["8082:8080"]
