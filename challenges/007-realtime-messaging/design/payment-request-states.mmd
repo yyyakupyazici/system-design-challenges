@@ -1,11 +1,20 @@
 stateDiagram-v2
     [*] --> PENDING: SEND kind=PAYMENT_REQUEST (mesajla aynı tx)
     PENDING --> PROCESSING: PAY · koşullu UPDATE (sadece biri kapar)
-    PROCESSING --> PAID: cüzdan OK · aynı tx'te sistem mesajı "ödendi"
+    PROCESSING --> PAID: HIZLI YOL · cüzdanın senkron cevabı OK
+    PROCESSING --> PAID: OLAY YOLU · wallet.events TRANSFER_COMPLETED
+    PROCESSING --> PAID: GÜVENLİK AĞI · reconciler aynı anahtarla tekrar sordu
     PROCESSING --> PENDING: cüzdan reddetti (bakiye yetersiz) → tekrar denenebilir
-    PROCESSING --> PROCESSING: cevap belirsiz (zaman aşımı) → reconciler aynı anahtarla tekrar sorar
+    PENDING --> PAID: OLAY YOLU · sohbet dışından ödendi (cüzdan ekranı, destek)
+    EXPIRED --> PAID: OLAY YOLU · süre dolduktan sonra ödendi (para gittiyse sohbet bunu gösterir)
     PENDING --> DECLINED: DECLINE
-    PENDING --> EXPIRED: süre doldu (job) · sistem mesajı
-    PAID --> [*]
+    PENDING --> EXPIRED: süre doldu (job)
+    PAID --> REVERSED: OLAY YOLU · TRANSFER_REVERSED (chargeback, fraud iptali)
+    note right of PAID
+        Her geçiş = koşullu UPDATE + aynı tx'te
+        deterministik id'li sistem mesajı.
+        Hangi yol önce gelirse o yazar,
+        diğerleri etkisiz kalır.
+    end note
+    REVERSED --> [*]
     DECLINED --> [*]
-    EXPIRED --> [*]

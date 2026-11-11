@@ -29,7 +29,7 @@ public final class ChatCluster {
     public final ConfigurableApplicationContext nodeB;
 
     private ChatCluster() {
-        kafka = new EmbeddedKafkaKraftBroker(1, 4, "chat.events");
+        kafka = new EmbeddedKafkaKraftBroker(1, 4, "chat.events", "wallet.events");
         kafka.afterPropertiesSet();
         nodeA = start("gw-a", true);
         nodeB = start("gw-b", false);

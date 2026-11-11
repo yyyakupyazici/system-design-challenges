@@ -24,6 +24,8 @@ public class FakeWalletClient implements WalletClient {
         TIMEOUT_AFTER_TRANSFER,
         /** Cüzdana hiç ulaşılamadı. */
         UNAVAILABLE,
+        /** Transfer yapılır ama cevap 1,5 sn gecikir (cüzdan olayı senkron cevaptan önce gelsin diye). */
+        SLOW_OK,
         INSUFFICIENT_FUNDS
     }
 
@@ -41,6 +43,13 @@ public class FakeWalletClient implements WalletClient {
         }
         if (mode == Mode.INSUFFICIENT_FUNDS && !transfersByKey.containsKey(idempotencyKey)) {
             return TransferResult.rejected("INSUFFICIENT_FUNDS");
+        }
+        if (mode == Mode.SLOW_OK) {
+            try {
+                Thread.sleep(1_500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         String id = transfersByKey.computeIfAbsent(idempotencyKey, k -> {
             moneyMovements.incrementAndGet();

@@ -23,6 +23,17 @@ import org.springframework.transaction.support.TransactionTemplate;
  *  ② belirsiz biterse (zaman aşımı: para gitti mi bilinmiyor) istek PROCESSING'de kalır; reconciler aynı anahtarla
  *  tekrar sorar. Cüzdan idempotent olduğu için ya mevcut transferi döner ya da şimdi yapar: iki kez ödeme olamaz.
  * </pre>
+ *
+ * Cüzdandan sohbete ters yön de var ({@link WalletEventsConsumer}): cüzdan transferi tamamlayınca ya da sonradan
+ * iade edince olay yayınlar. Üç yol birlikte çalışır:
+ * <pre>
+ *  HIZLI YOL      senkron cevap ("Öde"ye basan cihaz sonucu hemen görür)
+ *  OLAY YOLU      cüzdan "tamamlandı / iade edildi" der → belirsiz ödeme saniyeler içinde kapanır,
+ *                 sohbet dışından yapılan ödeme ve sonradan iade sohbete yansır
+ *  GÜVENLİK AĞI   reconciler PROCESSING'de takılanları cüzdana tekrar sorar (olay kaybolursa diye)
+ * </pre>
+ * Hepsi aynı koşullu durum geçişlerinden ve deterministik id'li sistem mesajlarından geçer: hangisi önce gelirse
+ * o yazar, diğerleri etkisiz kalır. Sohbete aynı "ödendi" mesajı iki kez düşmez.
  */
 @Service
 public class PaymentRequestService {
@@ -89,6 +100,44 @@ public class PaymentRequestService {
         });
         meters.counter("chat.payment.paid").increment();
         return "PAID";
+    }
+
+    // --- cüzdan olayları (WalletEventsConsumer çağırır) ---
+
+    /** Dönüş: durum değişti mi. */
+    boolean onTransferCompleted(long paymentRequestId, String transferId, long amountKurus) {
+        PaymentRequest pr = repo.find(paymentRequestId).orElse(null);
+        if (pr == null) {
+            return false;
+        }
+        if (pr.amountKurus() != amountKurus) {
+            // Tutar uyuşmuyor: ya bir hata ya bir saldırı. Sessizce "ödendi" demek yanlış, insan baksın.
+            log.error("Para isteği {} için tutar uyuşmazlığı: istek {} kuruş, transfer {} kuruş ({}). Durum değiştirilmedi.",
+                    paymentRequestId, pr.amountKurus(), amountKurus, transferId);
+            meters.counter("chat.payment.amount_mismatch").increment();
+            return false;
+        }
+        Boolean changed = tx.execute(s -> {
+            if (!repo.markPaidByWallet(paymentRequestId, transferId, amountKurus)) {
+                return false;                                       // zaten PAID (senkron yol ya da aynı olay önce geldi)
+            }
+            system.append(pr.conversationId(), pr.id(), "PAID",
+                    String.format(TR, "✅ %,.2f TL ödendi", pr.amountKurus() / 100.0), "Para isteğin ödendi");
+            return true;
+        });
+        if (Boolean.TRUE.equals(changed)) {
+            meters.counter("chat.payment.paid_by_event").increment();
+        }
+        return Boolean.TRUE.equals(changed);
+    }
+
+    boolean onTransferReversed(String transferId, String reason) {
+        Boolean changed = tx.execute(s -> repo.markReversed(transferId, reason).map(pr -> {
+            system.append(pr.conversationId(), pr.id(), "REVERSED",
+                    String.format(TR, "↩️ %,.2f TL ödeme iade edildi", pr.amountKurus() / 100.0), "Bir ödeme iade edildi");
+            return true;
+        }).orElse(false));
+        return Boolean.TRUE.equals(changed);
     }
 
     public boolean decline(long userId, long paymentRequestId) {

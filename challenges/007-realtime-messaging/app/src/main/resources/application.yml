@@ -83,6 +83,8 @@ chat:
   retention:
     messages: 365d                      # para isteği mesajları hariç (onlar payment_requests ile 5 yıl)
     cron: "0 15 3 * * *"
+  wallet:
+    events-topic: wallet.events          # 006'daki cüzdanın olay topic'i (sahibi cüzdan servisi)
   payment:
     request-ttl: 24h
     reconcile-after: 10s                # PROCESSING'de bu kadar kalan istek, cüzdana aynı anahtarla tekrar sorulur

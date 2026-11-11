@@ -153,15 +153,33 @@ Gateway, bağlanan kullanıcının abone olduğu kanalları bağlantı anında y
 
 ### 5.8 Para isteği (zorluk #8)
 
-[Durum diyagramı](design/payment-request-states.mmd). Mesaj servisi ile cüzdan ayrı sistemler, aralarında dağıtık transaction yok:
+[Durum diyagramı](design/payment-request-states.mmd). Mesaj servisi ile cüzdan ayrı sistemler, aralarında dağıtık transaction yok. Tutarlılık **iki yönlü** bir bağlantıdan ve üç yoldan geliyor.
 
+**Sohbet → cüzdan (senkron çağrı):**
 1. **Kapma:** `PENDING → PROCESSING` koşullu `UPDATE`. İki cihazdan aynı anda "Öde"ye basılsa da sadece biri cüzdanı çağırır.
 2. **Cüzdan:** `transfer(idempotencyKey = "payreq-<id>")`. Aynı anahtarla tekrar = aynı transfer.
-3. **Kapanış:** `PROCESSING → PAID` ve sohbete **sistem mesajı** ("✅ 250,00 TL ödendi") **aynı transaction'da**. Kart bu mesajla güncellenir, "ödendi ama bekliyor görünüyor" durumu oluşamaz.
-4. **Belirsiz cevap** (zaman aşımı, para gitti mi bilinmiyor): istek `PROCESSING`'de kalır, **reconciler** aynı anahtarla tekrar sorar. Cüzdan idempotent olduğu için para ikinci kez gitmez.
-5. **Reddedilirse** (bakiye yetersiz) `PENDING`'e döner, tekrar denenebilir. Süresi dolan istek `EXPIRED` olur ve sohbete sistem mesajı düşer.
+3. **Kapanış:** `PROCESSING → PAID` ve sohbete **sistem mesajı** ("✅ 250,00 TL ödendi") **aynı transaction'da**.
 
-Sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`): aynı geçiş iki kez denense de mesaj bir kez yazılır.
+Senkron, çünkü "Öde"ye basan kullanıcı sonucu birkaç yüz milisaniyede görmek istiyor.
+
+**Cüzdan → sohbet (olay):** 006'daki cüzdan her transferi outbox ile `wallet.events` topic'ine yayınlıyor (fraud, muhasebe ve bildirim de dinliyor). Sohbet servisi bu topic'i kendi consumer group'unda (`chat-payments`) dinler:
+
+| Olay | Sohbette ne olur |
+|---|---|
+| `TRANSFER_COMPLETED` + anahtar `payreq-<id>` | `PENDING`/`PROCESSING`/`EXPIRED`/`DECLINED` → `PAID` + sistem mesajı. **Sohbet dışından yapılan ödeme** (cüzdan ekranı, destek) ve süresi dolduktan sonra yapılan ödeme de yansır: para gittiyse sohbet bunu göstermeli |
+| `TRANSFER_REVERSED` | `PAID → REVERSED` + "↩️ ödeme iade edildi" (chargeback, fraud iptali) |
+| Tutar uyuşmuyor | Durum değiştirilmez, alarm metriği (`chat.payment.amount_mismatch`). Sessizce "ödendi" demek yanlış, insan bakmalı |
+| Anahtar `payreq-` ile başlamıyor | Yok sayılır (para isteğinden gelmeyen bir transfer) |
+
+**Üç yol birlikte:**
+
+| Yol | Ne zaman işe yarar |
+|---|---|
+| **Hızlı yol** (senkron cevap) | Normal durum: basan cihaz sonucu hemen görür |
+| **Olay yolu** (`wallet.events`) | Cevap kayboldu → saniyeler içinde kapanır. Sohbet dışından ödeme, sonradan iade |
+| **Güvenlik ağı** (reconciler) | Olay da bir şekilde kayboldu → `PROCESSING`'de takılanları aynı anahtarla cüzdana tekrar sorar |
+
+Üçü de aynı koşullu durum geçişlerinden geçer ve sistem mesajlarının `client_msg_id`'si deterministik (`payreq:<id>:PAID`). **Hangi yol önce gelirse o yazar, diğerleri etkisiz kalır**, sohbete aynı "ödendi" mesajı iki kez düşmez. Olay, senkron cevaptan önce de gelebilir (cüzdan yavaşsa). Bu da testte kanıtlandı. Bu, mesaj teslimindeki kalıcı / hızlı / kurtarma yollarının aynı mantığı.
 
 ### 5.9 Ağ topolojisi
 
@@ -216,7 +234,7 @@ Gateway, Redis yokken de bağlantı kabul eder ve mesaj gönderimi (DB yolu) ça
 | `outbox` | `OutboxWriter`, `OutboxRelay` (advisory lock lideri), `RetentionJob` |
 | `fanout` | `FanoutWorker` (Kafka), `DeliveryRouter`, `DeliveryPublisher`, `EphemeralRelay` (yazıyor) |
 | `presence` | `PresenceService` |
-| `payment` | `PaymentRequestService`, `PaymentJobs` (reconciler, süre dolumu), `SystemMessages`, `WalletClient` (+ test için `FakeWalletClient`) |
+| `payment` | `PaymentRequestService`, `WalletEventsConsumer` (cüzdan olayları), `PaymentJobs` (reconciler, süre dolumu), `SystemMessages`, `WalletClient` (+ test için `FakeWalletClient`) |
 | `push` | `PushWorker` (ayrı consumer group), `PushSender` (üretimde 004'ün bildirim platformu) |
 | `api` | REST: geçmiş, presence, demo kullanıcı/sohbet oluşturma |
 
@@ -260,12 +278,13 @@ Entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) ayağa kald
 | `IdempotencyAndOrderingIT` | Aynı mesaj iki gateway'den üç kez gönderilir: tek satır, hepsine aynı seq, sayaç boşa artmaz, Ayşe bir kez görür. İki kişi farklı gateway'lerden aynı anda 30'ar mesaj atar: seq 1–60 boşluksuz, iki farklı gateway'deki üyeler aynı sırayı görür |
 | `OfflineAndMultiDeviceIT` | Çevrimdışıya push, dönüşte imleçten senkron (yeni cihaz, kayıtlı cihaz imleci, istemci imleci). Ölü gateway'deki bayat kayıt yok sayılır. Bir cihazda okunan mesaj diğerinde de okundu olur |
 | `PaymentRequestIT` | İki cihazdan aynı anda "Öde": para bir kez. Cüzdan cevabı kaybolunca reconciler aynı anahtarla tamamlar, para bir kez. Bakiye yetersiz → tekrar dene. Süresi dolan ödenemez. Yetki ve geçersiz tutar |
+| `WalletEventsIT` | Test cüzdanın rolünü oynar. Sohbet dışından ödeme sohbete bir kez yansır (olay iki kez gelse de). Sonradan iade kartı "iade edildi" yapar. Cüzdan olayı senkron cevaptan **önce** gelir: olay yolu yazar, senkron yol mesajı tekrarlamaz, para bir kez gider. Tutarı uyuşmayan ve ilgisiz olaylar yok sayılır |
 | `BroadcastPresenceIT` | Kampanya kanalı iki gateway'deki abonelere ulaşır, push yok, abone yazamaz, geç gelen senkronla alır. "Yazıyor" iletilir ama saklanmaz. Presence: son görülme ve gizlilik |
 | `RedisOutageIT` | **A.** Redis 4 sn donduruluyor, mesaj bu sırada gönderiliyor: beklemeli tekrar deneme sayesinde canlı yoldan teslim edilir (tekrar deneme kapatılınca bu test başarısız oluyor, denendi). **B.** Redis kapatılıyor ve **boş** açılıyor: gönderme çalışır, çevrimdışına push gider, gateway sondası toparlanır, rehberi yeniden doldurur, RESYNC gönderir, istemci HEADS + SYNC ile kaçırdığını alır, sonraki mesaj yine canlı gelir |
 | `GatewayDrainIT` | Boşaltılan gateway 30 istemciye 0–2 sn'ye yayılmış RECONNECT gönderir, rehberden siler, yeni bağlantıya 503 döner |
 | `AdmissionLimiterTest` | 5.000 eşzamanlı el sıkışmadan sadece kova kadarı kabul edilir, Retry-After rastgele |
 
-**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): 2 birim + 18 entegrasyon testi geçti, art arda çalıştırmalarda da. `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
+**Sonuç** (yerel PostgreSQL 16 + Redis 7, gömülü Kafka): 2 birim + 22 entegrasyon testi geçti, art arda çalıştırmalarda da. `RedisOutageIT` Redis'i yerel süreç olarak yönettiği için sadece `IT_REDIS_HOST=localhost` ve `redis-server` PATH'teyken çalışır; Testcontainers ile atlanır.
 
 **Testlerin yakaladığı gerçek hatalar:**
 - Spring Kafka'nın varsayılan hata işleyicisi kısa bir Redis kesintisinde olayları beklemeden atlıyordu (§5.10).
@@ -275,6 +294,6 @@ Entegrasyon testleri **iki ayrı Spring uygulaması** (gw-a ve gw-b) ayağa kald
 
 - `docker-compose.yml` ve `k8s/` bu ortamda çalıştırılmadı (Docker ve Kubernetes yok). Sadece YAML sözdizimi kontrol edildi.
 - Kimlik doğrulama demo amaçlı (sorgu parametresi ve `X-User-Id`). Üretimde JWT.
-- Cüzdan (006) ve push (004) arayüz olarak tanımlı. Testlerde sahte uygulamaları kullanılıyor.
+- Cüzdan (006) ve push (004) arayüz olarak tanımlı. Testlerde sahte uygulamaları kullanılıyor. `wallet.events` topic'inin sahibi cüzdan servisi: sohbet servisi onu oluşturmaz, sadece dinler (testte gömülü Kafka'da önceden açılıyor).
 - Tek PostgreSQL, tek Redis. Shard'lama, aylık partition ve Pub/Sub için ayrı Redis tasarımda anlatıldı (§5.3, §5.11), kodda yok.
 - HPA'nın bağlantı sayısı metriği için Prometheus Adapter kurulumu gerekir.

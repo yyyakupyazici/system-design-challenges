@@ -57,6 +57,24 @@ public class PaymentRepository {
                 .param(id).update() == 1;
     }
 
+    /**
+     * Cüzdan "transfer tamamlandı" dedi. Para gerçekten hareket ettiyse sohbet bunu yansıtmalı, istek hangi
+     * durumdaysa (sohbetten değil cüzdan ekranından ödenmiş, ya da süresi dolduktan sonra ödenmiş olabilir).
+     * Tutar uyuşmuyorsa hiçbir şey yapılmaz (çağıran ayrıca kontrol edip alarm üretir). Zaten PAID ise etkisiz.
+     */
+    public boolean markPaidByWallet(long id, String transferId, long amountKurus) {
+        return jdbc.sql("UPDATE payment_requests SET status = 'PAID', wallet_transfer_id = ?, updated_at = now() "
+                        + "WHERE id = ? AND amount_kurus = ? AND status IN ('PENDING', 'PROCESSING', 'EXPIRED', 'DECLINED')")
+                .params(transferId, id, amountKurus).update() == 1;
+    }
+
+    /** Ödeme iade edildi. Sadece PAID → REVERSED; aynı olay ikinci kez gelirse etkisiz. */
+    public Optional<PaymentRequest> markReversed(String transferId, String reason) {
+        return jdbc.sql("UPDATE payment_requests SET status = 'REVERSED', reversal_reason = ?, updated_at = now() "
+                        + "WHERE wallet_transfer_id = ? AND status = 'PAID' RETURNING " + COLS)
+                .params(reason, transferId).query(this::map).optional();
+    }
+
     public boolean markExpired(long id) {
         return jdbc.sql("UPDATE payment_requests SET status = 'EXPIRED', updated_at = now() WHERE id = ? AND status = 'PENDING'")
                 .param(id).update() == 1;
