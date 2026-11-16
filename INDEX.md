@@ -14,3 +14,4 @@ Belirli bir teknolojiyi bütün kullanım senaryolarıyla, temelinden ele alan �
 | Lab | Tarih | Konu | Klasör |
 |---|---|---|---|
 | Redis Architect Lab | 2026-11-06 | Redis'i mimar gözüyle: atomiklik (tek komut, Lua, MULTI, WATCH), 14 senaryo (cache, kilit + fencing, rate limit ×3, idempotency, flash sale stok, liderlik, gecikmeli kuyruk, Streams + DLQ, Pub/Sub, oturum, HLL/Bitmap/Geo, sıcak key, cluster), k8s'te 6 düğümlü Redis Cluster, gerçek failover ölçümü | [labs/redis-architect-lab](labs/redis-architect-lab/) |
+| Raft & etcd Lab | 2026-11-16 | Raft'ı ve PostgreSQL yüksek erişilebilirliğini canlı görmek: 3 düğümlü etcd (log replikasyonu, lider seçimi, term, çoğunluk kaybı), lease / compare-and-set / watch, 4 PostgreSQL + senkron replikasyon, Spring Boot ile mini-Patroni (fencing, promote, senkron standby yönetimi), İstanbul yanıyor (RPO 0), split-brain, `ANY 1` tuzağı, read-your-writes. 012'nin laboratuvarı | [labs/raft-etcd-lab](labs/raft-etcd-lab/) |

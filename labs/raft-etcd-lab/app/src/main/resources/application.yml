@@ -1,0 +1,26 @@
+# Bir ajan = bir PostgreSQL'in yanındaki bekçi. Üç ajan için üç kez, farklı ayarlarla başlatılır (README).
+server:
+  port: ${PORT:8080}
+
+spring:
+  application:
+    name: raft-lab-agent
+  threads:
+    virtual:
+      enabled: true
+
+lab:
+  node: ${NODE:pg-ist}
+  region: ${REGION:istanbul}
+  pg-port: ${PG_PORT:5511}
+  etcd-endpoints: ${ETCD_ENDPOINTS:http://127.0.0.1:23791,http://127.0.0.1:23792,http://127.0.0.1:23793}
+  ttl: ${TTL:6s}                  # lider kaydının ömrü (Patroni varsayılanı 30 sn; lab'da kısa ki beklemeyelim)
+  loop-wait: ${LOOP_WAIT:1s}
+  etcd-timeout: 1s
+  sync-mode: ${SYNC_MODE:SINGLE}
+  strict: true
+
+logging:
+  level:
+    io.etcd.jetcd: WARN
+    io.grpc: WARN

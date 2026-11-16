@@ -1,0 +1,112 @@
+# 3 düğümlü etcd, Kubernetes'te. Her düğüm AYRI bir zonda (veri merkezinde): biri İstanbul, biri Ankara, biri tanık.
+# Lab'deki lab.sh'ın Kubernetes karşılığı. PostgreSQL HA için gerçekte Patroni (Zalando Postgres Operator)
+# ya da CloudNativePG kullanılır; bu dosya sadece etcd/Raft katmanını gösterir.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: raft-lab
+---
+# Headless Service: her pod'un sabit DNS adı olur (etcd-0.etcd.raft-lab.svc). Raft üyeleri birbirini bu adlarla bulur.
+apiVersion: v1
+kind: Service
+metadata:
+  name: etcd
+  namespace: raft-lab
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true          # küme kurulurken, henüz "hazır" olmayan üyeler de birbirini görmeli
+  selector: { app: etcd }
+  ports:
+    - { name: client, port: 2379 }
+    - { name: peer, port: 2380 }
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: etcd
+  namespace: raft-lab
+spec:
+  serviceName: etcd
+  replicas: 3                             # tek sayı: 3'te 1, 5'te 2 kayıp tolere edilir. 4 düğüm 3'ten dayanıklı DEĞİL
+  podManagementPolicy: Parallel           # üçü birlikte başlasın (ilk kurulumda birbirlerini beklerler)
+  selector:
+    matchLabels: { app: etcd }
+  template:
+    metadata:
+      labels: { app: etcd }
+    spec:
+      # Her üye farklı bir zonda: bir veri merkezi gidince çoğunluk (2/3) kalır
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels: { app: etcd }
+      containers:
+        - name: etcd
+          image: quay.io/coreos/etcd:v3.5.17
+          ports:
+            - { containerPort: 2379, name: client }
+            - { containerPort: 2380, name: peer }
+          env:
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+          command:
+            - etcd
+            - --name=$(POD_NAME)
+            - --data-dir=/var/lib/etcd
+            - --listen-client-urls=http://0.0.0.0:2379
+            - --advertise-client-urls=http://$(POD_NAME).etcd.raft-lab.svc:2379
+            - --listen-peer-urls=http://0.0.0.0:2380
+            - --initial-advertise-peer-urls=http://$(POD_NAME).etcd.raft-lab.svc:2380
+            - --initial-cluster=etcd-0=http://etcd-0.etcd.raft-lab.svc:2380,etcd-1=http://etcd-1.etcd.raft-lab.svc:2380,etcd-2=http://etcd-2.etcd.raft-lab.svc:2380
+            - --initial-cluster-state=new
+            - --initial-cluster-token=raft-lab
+            # Şehirler arası RTT ~8 ms: heartbeat ≈ 10×RTT, election ≈ 10×heartbeat (etcd tuning rehberi)
+            - --heartbeat-interval=100
+            - --election-timeout=1000
+            - --auto-compaction-retention=1h
+            - --quota-backend-bytes=2147483648        # 2 GB: etcd koordinasyon verisi içindir, müşteri verisi değil
+          readinessProbe:
+            httpGet: { path: /health, port: 2379 }
+            periodSeconds: 5
+          resources:
+            requests: { cpu: 500m, memory: 512Mi }
+            limits: { memory: 1Gi }
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/etcd }
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 10Gi } }
+        # Raft her yazmada fsync bekler: yavaş disk = yavaş küme. Üretimde SSD storageClass şart.
+---
+# Bakımda (node drain) aynı anda en fazla 1 üye gitsin: 2/3 çoğunluk korunur
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: etcd
+  namespace: raft-lab
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels: { app: etcd }
+---
+# etcd'ye sadece ajanlar (istemci portu) ve diğer etcd üyeleri (peer portu) erişebilir
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: etcd
+  namespace: raft-lab
+spec:
+  podSelector:
+    matchLabels: { app: etcd }
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: { matchLabels: { app: etcd } }
+      ports: [{ port: 2380 }, { port: 2379 }]
+    - from:
+        - podSelector: { matchLabels: { role: ha-agent } }
+      ports: [{ port: 2379 }]
